@@ -13,7 +13,7 @@ Hangjun Ye<sup>2</sup>, Wenyu Liu<sup>1</sup>, Xinggang Wang<sup>1✉</sup>
 (\*) Equal contribution. (†) Project leader. (✉) Corresponding author.  
 
 <a href=""><img src='https://img.shields.io/badge/arXiv-ReCogDrive-red' alt='Paper PDF'></a>
-<a href="https://xiaomi-research.github.io/ReCogDrive/"><img src='https://img.shields.io/badge/Project_Page-ReCogDrive-green' alt='Project Page'></a>
+<a href="https://xiaomi-research.github.io/recogdrive/"><img src='https://img.shields.io/badge/Project_Page-ReCogDrive-green' alt='Project Page'></a>
 </div>
 
 
