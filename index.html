@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+   <meta name="description"
+   content="ReCogDrive is an end-to-end autonomous driving system that integrates Vision-Language Models (VLMs) with a diffusion planner. It uses a novel three-stage reinforced cognitive framework to master complex driving scenarios and achieve state-of-the-art performance.">
+    <meta name="keywords" content="ReCogDrive, End-to-End Autonomous Driving, Vision-Language Models, Autonomous Driving">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ReCogDrive: Mastering End-to-End Autonomous Driving with Reinforced Cognitive Frameworks</title>
+
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-PYVRSFMDRL"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+
+    function gtag() {
+      dataLayer.push(arguments);
+    }
+
+    gtag('js', new Date());
+
+    gtag('config', 'G-PYVRSFMDRL');
+  </script>
+
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro"
+        rel="stylesheet">
+
+  <link rel="stylesheet" href="./static/css/bulma.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-carousel.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-slider.min.css">
+  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="./static/css/index.css">
+  <link rel="icon" href="./static/images/hands.png">
+
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script defer src="./static/js/fontawesome.all.min.js"></script>
+  <script src="./static/js/bulma-carousel.min.js"></script>
+  <script src="./static/js/bulma-slider.min.js"></script>
+  <script src="./static/js/index.js"></script>
+</head>
+<body>
+
+<!-- <nav class="navbar" role="navigation" aria-label="main navigation">
+  <div class="navbar-brand">
+    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false">
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+    </a>
+  </div>
+  <div class="navbar-menu">
+    <div class="navbar-start" style="flex-grow: 1; justify-content: center;">
+      <a class="navbar-item" href="https://keunhong.com">
+      <span class="icon">
+          <i class="fas fa-home"></i>
+      </span>
+      </a>
+
+      <div class="navbar-item has-dropdown is-hoverable">
+        <a class="navbar-link">
+          More Research
+        </a>
+        <div class="navbar-dropdown">
+          <a class="navbar-item" href="https://hypernerf.github.io">
+            HyperNeRF
+          </a>
+          <a class="navbar-item" href="https://nerfies.github.io">
+            Nerfies
+          </a>
+          <a class="navbar-item" href="https://latentfusion.github.io">
+            LatentFusion
+          </a>
+          <a class="navbar-item" href="https://photoshape.github.io">
+            PhotoShape
+          </a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</nav> -->
+
+
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <div class="columns is-centered">
+        <div class="column has-text-centered">
+          <h2 class="title is-3 publication-title">ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving</h2>
+          <div class="is-size-5 publication-authors">
+            <span class="author-block"><a href="#"><strong>Yongkang Li</strong></a><sup>1,2*</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Kaixin Xiong</strong></a><sup>2*</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Xiangyu Guo</strong></a><sup>1,2</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Fang Li</strong></a><sup>2</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Sixu Yan</strong></a><sup>1</sup>,</span>
+            <span class="author-block"><a href="https://gangweix.github.io/"><strong>Gangwei Xu</strong></a><sup>1,2</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Lijun Zhou</strong></a><sup>2</sup>,</span>
+            <span class="author-block"><a href="https://long.ooo/"><strong>Long Chen</strong></a><sup>2</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Haiyang Sun</strong></a><sup>2†</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Bing Wang</strong></a><sup>2</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Guang Chen</strong></a><sup>2</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Hangjun Ye</strong></a><sup>2</sup>,</span>
+            <span class="author-block"><a href="https://eic.hust.edu.cn/professor/liuwenyu/"><strong>Wenyu Liu</strong></a><sup>1</sup>,</span>
+            <span class="author-block"><a href="https://xwcv.github.io/"><strong>Xinggang Wang</strong></a><sup>1</sup>&nbsp;<sup>✉</sup></span>
+          </div>
+          
+          <div class="is-size-5 publication-authors">
+            <span class="author-block"><sup>1</sup>Huazhong University of Science and Technology,</span>
+            <span class="author-block"><sup>2</sup>Xiaomi EV</span>
+            <p></p>
+            <span class="author-block"><sup>*</sup>Equal Contributions.</span>
+            <span class="author-block"><sup>†</sup>Project Lead.</span>
+            <span class="author-block"><sup>✉</sup>Corresponding Author.</span>
+          </div>
+
+          <div class="column has-text-centered">
+            <div class="publication-links">
+              <!-- PDF Link. -->
+              <span class="link-block">
+                <a href=""
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fas fa-file-pdf"></i>
+                  </span>
+                  <span>Arxiv</span>
+                </a>
+              </span>
+              <span class="link-block">
+                <a href="https://github.com/xiaomi-research/recogdrive"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-github"></i>
+                  </span>
+                  <span>Code</span>
+                  </a>
+              </span>
+              <!-- Video Link. -->
+              <!-- <span class="link-block">
+                <a href="https://www.youtube.com/watch?v=MrKrnHhk8IA"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-youtube"></i>
+                  </span>
+                  <span>Video</span>
+                </a>
+              </span> -->
+              <!-- Code Link. -->
+              <!-- <span class="link-block">
+                <a href="https://github.com/google/nerfies"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-github"></i>
+                  </span>
+                  <span>Code</span>
+                  </a>
+              </span> -->
+              <!-- Dataset Link. -->
+              <!-- <span class="link-block">
+                <a href="https://github.com/google/nerfies/releases/tag/0.1"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="far fa-images"></i>
+                  </span>
+                  <span>Data</span>
+                  </a> -->
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- <section class="hero teaser">
+  <div class="container is-max-desktop">
+    <div class="hero-body">
+      <video id="teaser" autoplay muted loop playsinline height="100%">
+        <source src="./static/videos/teaser.mp4"
+                type="video/mp4">
+      </video>
+      <h2 class="subtitle has-text-centered">
+        <span class="dnerf">Nerfies</span> turns selfie videos from your phone into
+        free-viewpoint
+        portraits.
+      </h2>
+    </div>
+  </div>
+</section>
+
+
+<section class="hero is-light is-small">
+  <div class="hero-body">
+    <div class="container">
+      <div id="results-carousel" class="carousel results-carousel">
+        <div class="item item-steve">
+          <video poster="" id="steve" autoplay controls muted loop playsinline height="100%">
+            <source src="./static/videos/steve.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+        <div class="item item-chair-tp">
+          <video poster="" id="chair-tp" autoplay controls muted loop playsinline height="100%">
+            <source src="./static/videos/chair-tp.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+        <div class="item item-shiba">
+          <video poster="" id="shiba" autoplay controls muted loop playsinline height="100%">
+            <source src="./static/videos/shiba.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+        <div class="item item-fullbody">
+          <video poster="" id="fullbody" autoplay controls muted loop playsinline height="100%">
+            <source src="./static/videos/fullbody.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+        <div class="item item-blueshirt">
+          <video poster="" id="blueshirt" autoplay controls muted loop playsinline height="100%">
+            <source src="./static/videos/blueshirt.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+        <div class="item item-mask">
+          <video poster="" id="mask" autoplay controls muted loop playsinline height="100%">
+            <source src="./static/videos/mask.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+        <div class="item item-coffee">
+          <video poster="" id="coffee" autoplay controls muted loop playsinline height="100%">
+            <source src="./static/videos/coffee.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+        <div class="item item-toby">
+          <video poster="" id="toby" autoplay controls muted loop playsinline height="100%">
+            <source src="./static/videos/toby2.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+      </div>
+    </div>
+  </div>
+</section> -->
+
+<style>
+  .container.is-max-desktop {
+    max-width: 55%; /* Allows the container to take up the full width of the parent */
+    height: auto; 
+  }
+</style>
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Abstract. -->
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            Although end-to-end autonomous driving has made remarkable progress, its performance degrades significantly in rare and long-tail scenarios. Recent approaches attempt to address this challenge by leveraging the rich world knowledge of Vision-Language Models (VLMs), but these methods suffer from several limitations: 
+          <!-- </p>
+          <p> -->
+            (1) a significant domain gap between the pre-training data of VLMs and real-world driving data, 
+          <!-- </p>
+          <p> -->
+            (2) a dimensionality mismatch between the discrete language space and the continuous action space, 
+          <!-- </p>
+          <p> -->
+            (3) imitation learning tends to capture the average behavior present in the dataset, which may be suboptimal even dangerous.
+          <!-- </p>
+          <p> -->
+            In this paper, we propose CogDrive, an autonomous driving system that integrates VLMs with a diffusion planner, adopting a three-stage paradigm for training. In the first stage, we use a large-scale driving question-answering dataset to train the VLMs, mitigating the domain discrepancy between generic content and real-world driving scenarios.
+            In the second stage, we employ a diffusion-based planner to perform imitation learning, mapping representations from the latent language space to continuous driving actions. Finally, we fine-tune the diffusion planner using reinforcement learning in the NAVSIM non-reactive simulator, enabling the model to generate safer, more human-like driving trajectories.
+            We evaluate our approach on the planning-oriented NAVSIM benchmark, achieving a PDMS of 89.6 and setting a new state-of-the-art that surpasses the previous vision-only SOTA by 5.6 PDMS.
+          <!-- </p> -->
+          
+          </p>
+        </div>
+      </div>
+    </div>
+    <!--/ Abstract. -->
+
+    <!-- Paper video. -->
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <div class="publication-image">
+          <img src="./static/images/main-fig.png" alt="Description of the image" >
+        </div>
+      </div>
+    </div>
+    <!--/ Paper video. -->
+  </div>
+</section>
+
+
+<style>
+  .publication-image-main {
+    width: 1000px; /* Set fixed width for the container of image and text */
+    margin: 0 auto; /* Center the container within its parent column */
+    text-align: left; /* Ensure text inside is left-aligned for justification */
+  }
+  .publication-image-main img {
+    width: 1000px;  /* Image width matches its container */
+    height: 550px; /* Set fixed height */
+    object-fit: contain;  /* Maintains aspect ratio while filling the box */
+  }
+  /* The .column.is-four-fifths has text-align: center applied,
+     which centers block-level elements like the <p> tag itself if not explicitly overridden.
+     While text-align: left is set on .publication-image-main,
+     we ensure has-text-justified works as expected. */
+</style>
+
+
+<style>
+  .publication-image-main {
+    width: 820px;
+    margin: 0 auto;
+    text-align: left;
+  }
+  .publication-image-main img {
+    width: 100%;
+    height: auto;
+    object-fit: contain;
+  }
+  .publication-caption {
+    width: 100%;
+    margin-top: 10px;
+    text-align: justify;
+  }
+</style>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-5">Model Architecture and Training Pipeline</h2>
+      </div>
+    </div>
+  </div>
+
+  <div class="columns is-centered">
+    <div class="column is-four-fifths">
+      <div class="publication-image-main">
+        <img src="./static/images/nips-main-fig-v2.jpg" alt="ReCogDrive System Overview">
+        <p class="publication-caption">
+          Overview of the ReCogDrive architecture and training pipeline. The system consists of a Vision-Language Model (VLM) and a diffusion planner. It takes as input a front-view image, navigation command, ego states, and task instruction. The VLM encodes multimodal information into latent features, which are passed to the diffusion planner to generate future trajectories by denoising from random noise. Training follows a three-stage paradigm: (1) the VLM is pre-trained on a large-scale driving QA dataset to adapt it to driving semantics; (2) the VLM is then frozen, and the diffusion planner is trained via imitation learning to mimic expert driving behaviors; (3) the planner is further fine-tuned using reinforcement learning with the assistance of the NAVSIM simulator, enabling it to predict safer, more stable, and more comfortable trajectories.
+          
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+
+<style>
+  .publication-image-rl {
+    width: 800px;  /* Fixed width for the container of image and text */
+    margin: 0 auto; /* Center the container horizontally */
+    text-align: left; /* Ensure text inside is left-aligned for proper justification */
+  }
+  .publication-image-rl img {
+    width: 100%;   /* Image fills 100% of its 800px container */
+    height: 340px; /* Set fixed height */
+    object-fit: contain;  /* Maintains aspect ratio while filling the box */
+  }
+</style>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-5">Simulator-assisted Reinforcement Learning.</h2>
+      </div>
+    </div>
+  </div>
+  <div class="columns is-centered has-text-centered">
+    <div class="column is-four-fifths">
+      <div class="publication-image-rl">
+        <img src="./static/images/20250606-111433.png" alt="Comparison of Imitation Learning and Simulator-assisted Reinforcement Learning">
+        <br>
+        <p class="content has-text-justified">
+          Imitation learning often struggles with the inherent diversity of expert demonstrations, which can lead to averaged and suboptimal trajectories, as illustrated in (a). ReCogDrive addresses this limitation with simulator-assisted reinforcement learning (RL), enabling the diffusion planner to explore and learn robust driving behaviors in a simulated environment. In (b), multiple trajectories are sampled from the diffusion planner within the non-reactive NAVSIM simulator and evaluated on safety, drivability, and comfort to compute a Predictive Driver Model Score (PDMS) as the reward. This reward is then processed through group computation to derive advantages, which are used to compute the policy loss. To ensure stability during learning, we combine the RL objective with a behavior cloning loss. This enables ReCogDrive to predict safer, smoother, and more reliable trajectories beyond imitation.
+        </p>        
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .publication-image-fig {
+    width: 800px;   /* Container width matches image width */
+    margin: 0 auto;  /* Center container */
+    text-align: left; /* Left-align text for justification */
+  }
+  .publication-image-fig img {
+    width: 800px;  /* Fixed width */
+    height: 400px;  /* Fixed height */
+    object-fit: contain;
+  }
+  .publication-image-fig p.content {
+    width: 800px;   /* Make paragraph text width same as image */
+    margin: 0 auto;  /* Center paragraph */
+    text-align: justify; /* Justify text */
+  }
+</style>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-5">Performance comparison on NAVSIM.</h2>
+      </div>
+    </div>
+  </div>
+  <div class="columns is-centered has-text-centered">
+    <div class="column is-four-fifths">
+      <div class="publication-image-fig">
+        <img src="./static/images/screenshot-20250606-111540.png" alt="Performance comparison on NAVSIM benchmark" >
+        <br>
+        <p class="content">
+          The above figure presents the performance comparison on the NAVSIM benchmark. ReCogDrive achieves a Predictive Driver Model Score (PDMS) of 89.6, setting a new state-of-the-art. Despite relying solely on camera inputs, it surpasses LiDAR-augmented models such as DiffusionDrive and WoTE by 1.5 and 1.2 PDMS, respectively. Compared to fine-tuned baselines like InternVL3 and QwenVL2.5, ReCogDrive delivers a significant improvement of 6.3 PDMS, demonstrating the effectiveness of our three-stage training framework. It also outperforms the previous best camera-only method, PARA-Drive, by 5.6 PDMS.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .publication-image-vis { 
+    width: 800px; /* 设置图片和文字容器的固定宽度，根据 Figure 8 视觉效果设定为 1000px */
+    margin: 0 auto; /* 水平居中容器 */
+    text-align: left; /* 确保容器内的文字左对齐，并允许has-text-justified生效 */
+  }
+  .publication-image-vis img {
+    width: 100%;   /* 图片宽度充满其父容器 (1000px) */
+    height: auto; /* 保持图片纵横比，避免变形 */
+    max-height: 600px; /* 设置最大高度，防止图片过高 */
+    object-fit: contain;  /* 保持图片纵横比并适应框内，若有额外空间则留白 */
+  }
+
+</style>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-5">Visualization.</h2>
+      </div>
+    </div>
+  </div>
+  <div class="columns is-centered"> <div class="column"> <div class="publication-image-vis"> <img src="./static/images/20250606-220651.png" alt="ReCogDrive Perception and Planning Visualization Example">
+        <br>
+        <p class="content has-text-justified">
+          This visualization showcases ReCogDrive's comprehensive perception and planning capabilities within the NAVSIM environment. As demonstrated in the figure, in addition to generating precise and smooth trajectory predictions, our system also produces rich, descriptive scene summaries and clear, high-level driving instructions. ReCogDrive accurately identifies critical objects like taxis and traffic lights, seamlessly integrating this cognitive understanding to inform its robust planning decisions, demonstrating true end-to-end autonomous driving with enhanced cognition.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="section" id="BibTeX">
+  <div class="container is-max-desktop content">
+    <h2 class="title">BibTeX</h2>
+    <pre><code>@article{,
+  author    = {},
+  title     = {},
+  journal   = {},
+  year      = {2025},
+}</code></pre>
+  </div>
+</section>
+
+
+<!-- <footer class="footer">
+  <div class="container">
+    <div class="content has-text-centered">
+      <a class="icon-link"
+         href="./static/videos/nerfies_paper.pdf">
+        <i class="fas fa-file-pdf"></i>
+      </a>
+      <a class="icon-link" href="https://github.com/keunhong" class="external-link" disabled>
+        <i class="fab fa-github"></i>
+      </a>
+    </div>
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content">
+          <p>
+            This website is licensed under a <a rel="license"
+                                                href="http://creativecommons.org/licenses/by-sa/4.0/">Creative
+            Commons Attribution-ShareAlike 4.0 International License</a>.
+          </p>
+          <p>
+            This means you are free to borrow the <a
+              href="https://github.com/nerfies/nerfies.github.io">source code</a> of this website,
+            we just ask that you link back to this page in the footer.
+            Please remember to remove the analytics code included in the header of the website which
+            you do not want on your website.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html> -->
