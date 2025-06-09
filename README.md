@@ -1,7 +1,7 @@
 
 
 <div align="center">
-<h3>ReCogDrive: Mastering End-to-End Autonomous Driving with Reinforced Cognitive Frameworks</h3>
+<h3>ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving</h3>
 
 Yongkang Li<sup>1,2\*</sup>, Kaixin Xiong<sup>2\*</sup>, Xiangyu Guo<sup>1,2</sup>, Fang Li<sup>2</sup>, Sixu Yan<sup>1</sup>, Gangwei Xu<sup>1,2</sup>,  
 Lijun Zhou<sup>2</sup>, Long Chen<sup>2</sup>, Haiyang Sun<sup>2†</sup>, Bing Wang<sup>2</sup>, Guang Chen<sup>2</sup>,  
