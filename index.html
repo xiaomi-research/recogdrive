@@ -90,7 +90,7 @@
         <div class="column has-text-centered">
           <h2 class="title is-3 publication-title">ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving</h2>
           <div class="is-size-5 publication-authors">
-            <span class="author-block"><a href="#"><strong>Yongkang Li</strong></a><sup>1,2*</sup>,</span>
+            <span class="author-block"><a href="https://owl-10.github.io/yongkangli/"><strong>Yongkang Li</strong></a><sup>1,2*</sup>,</span>
             <span class="author-block"><a href="#"><strong>Kaixin Xiong</strong></a><sup>2*</sup>,</span>
             <span class="author-block"><a href="#"><strong>Xiangyu Guo</strong></a><sup>1,2</sup>,</span>
             <span class="author-block"><a href="#"><strong>Fang Li</strong></a><sup>2</sup>,</span>
@@ -133,7 +133,7 @@
                   <span class="icon">
                       <i class="fab fa-github"></i>
                   </span>
-                  <span>Code</span>
+                  <span>Code (Coming soon)</span>
                   </a>
               </span>
               <!-- Video Link. -->
@@ -350,7 +350,7 @@
       <div class="publication-image-main">
         <img src="./static/images/nips-main-fig-v2.jpg" alt="ReCogDrive System Overview">
         <p class="publication-caption">
-          Overview of the ReCogDrive architecture and training pipeline. The system consists of a Vision-Language Model (VLM) and a diffusion planner. It takes as input a front-view image, navigation command, ego states, and task instruction. The VLM encodes multimodal information into latent features, which are passed to the diffusion planner to generate future trajectories by denoising from random noise. Training follows a three-stage paradigm: (1) the VLM is pre-trained on a large-scale driving QA dataset to adapt it to driving semantics; (2) the VLM is then frozen, and the diffusion planner is trained via imitation learning to mimic expert driving behaviors; (3) the planner is further fine-tuned using reinforcement learning with the assistance of the NAVSIM simulator, enabling it to predict safer, more stable, and more comfortable trajectories.
+          Overview of the ReCogDrive architecture and training pipeline. The system consists of a Vision-Language Model (VLM) and a diffusion planner. It takes as input a front-view image, navigation command, ego states, and task instruction. The VLM encodes multimodal information into latent features, which are passed to the diffusion planner to generate future trajectories by denoising from random noise. Training follows a three-stage paradigm: (1) the VLM is pre-trained on a large-scale driving QA dataset to adapt it to driving scenario; (2) the VLM is then frozen, and the diffusion planner is trained via imitation learning to mimic expert driving behaviors; (3) the planner is further fine-tuned using reinforcement learning with the assistance of the NAVSIM simulator, enabling it to predict safer, more stable, and more comfortable trajectories.
           
         </p>
       </div>
@@ -459,7 +459,7 @@
   <div class="columns is-centered"> <div class="column"> <div class="publication-image-vis"> <img src="./static/images/20250606-220651.png" alt="ReCogDrive Perception and Planning Visualization Example">
         <br>
         <p class="content has-text-justified">
-          This visualization showcases ReCogDrive's comprehensive perception and planning capabilities within the NAVSIM environment. As demonstrated in the figure, in addition to generating precise and smooth trajectory predictions, our system also produces rich, descriptive scene summaries and clear, high-level driving instructions. ReCogDrive accurately identifies critical objects like taxis and traffic lights, seamlessly integrating this cognitive understanding to inform its robust planning decisions, demonstrating true end-to-end autonomous driving with enhanced cognition.
+          This visualization showcases ReCogDrive's comprehensive perception and planning capabilities. As demonstrated in the figure, in addition to generating precise and smooth trajectory predictions, our system also produces accurate scene summaries and clear, high-level driving instructions. ReCogDrive accurately identifies critical objects like taxis and traffic lights, seamlessly integrating this cognitive understanding to inform its robust planning decisions, demonstrating true end-to-end autonomous driving with enhanced cognition.
         </p>
       </div>
     </div>
@@ -468,11 +468,11 @@
 <section class="section" id="BibTeX">
   <div class="container is-max-desktop content">
     <h2 class="title">BibTeX</h2>
-    <pre><code>@article{,
-  author    = {},
-  title     = {},
-  journal   = {},
-  year      = {2025},
+    <pre><code>@article{li2025recogdrive,
+  title={ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving},
+  author={Li, Yongkang and Xiong, Kaixin and Guo, Xiangyu and Li, Fang and Yan, Sixu and Xu, Gangwei and Zhou, Lijun and Chen, Long and Sun, Haiyang and Wang, Bing and others},
+  journal={arXiv preprint arXiv:2506.08052},
+  year={2025}
 }</code></pre>
   </div>
 </section>
