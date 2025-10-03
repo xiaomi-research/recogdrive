@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
    <meta name="description"
-   content="ReCogDrive is an end-to-end autonomous driving system that integrates Vision-Language Models (VLMs) with a diffusion planner. It uses a novel three-stage reinforced cognitive framework to master complex driving scenarios and achieve state-of-the-art performance.">
+   content="ReCogDrive is an end-to-end autonomous driving system that unifies the cognitive reasoning of Vision-Language Models (VLMs) with the continuous action generation of a diffusion planner. This reinforced cognitive framework learns to navigate complex, long-tail scenarios with human-like intuition, setting a new state-of-the-art in both safety and performance.">
     <meta name="keywords" content="ReCogDrive, End-to-End Autonomous Driving, Vision-Language Models, Autonomous Driving">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ReCogDrive: Mastering End-to-End Autonomous Driving with Reinforced Cognitive Frameworks</title>
+  <title>ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving</title>
 
   <!-- Global site tag (gtag.js) - Google Analytics -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-PYVRSFMDRL"></script>
@@ -88,7 +88,12 @@
     <div class="container is-max-desktop">
       <div class="columns is-centered">
         <div class="column has-text-centered">
-          <h2 class="title is-3 publication-title">ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving</h2>
+          <h2 class="title is-4 publication-title">
+            <span class="icon-text" style="display: flex; align-items: center; gap: 0.5em;">
+              <img src="./static/images/logo2.png" alt="icon" style="width: 3em; height: 3em;">
+              <span>ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving</span>
+            </span>
+          </h2>
           <div class="is-size-5 publication-authors">
             <span class="author-block"><a href="https://owl-10.github.io/yongkangli/"><strong>Yongkang Li</strong></a><sup>1,2*</sup>,</span>
             <span class="author-block"><a href="#"><strong>Kaixin Xiong</strong></a><sup>2*</sup>,</span>
@@ -100,6 +105,7 @@
             <span class="author-block"><a href="https://long.ooo/"><strong>Long Chen</strong></a><sup>2</sup>,</span>
             <span class="author-block"><a href="#"><strong>Haiyang Sun</strong></a><sup>2†</sup>,</span>
             <span class="author-block"><a href="#"><strong>Bing Wang</strong></a><sup>2</sup>,</span>
+            <span class="author-block"><a href="#"><strong>Kun Ma</strong></a><sup>2</sup>,</span>
             <span class="author-block"><a href="#"><strong>Guang Chen</strong></a><sup>2</sup>,</span>
             <span class="author-block"><a href="#"><strong>Hangjun Ye</strong></a><sup>2</sup>,</span>
             <span class="author-block"><a href="https://eic.hust.edu.cn/professor/liuwenyu/"><strong>Wenyu Liu</strong></a><sup>1</sup>,</span>
@@ -120,51 +126,43 @@
               <!-- PDF Link. -->
               <span class="link-block">
                 <a href="https://arxiv.org/abs/2506.08052"
-                   class="external-link button is-normal is-rounded is-dark">
+                  class="external-link button is-normal is-rounded is-primary">
                   <span class="icon">
-                      <i class="fas fa-file-pdf"></i>
+                    <i class="fas fa-file-pdf"></i>
                   </span>
                   <span>Arxiv</span>
                 </a>
               </span>
+
               <span class="link-block">
                 <a href="https://github.com/xiaomi-research/recogdrive"
-                   class="external-link button is-normal is-rounded is-dark">
+                  class="external-link button is-normal is-rounded is-dark">
                   <span class="icon">
-                      <i class="fab fa-github"></i>
+                    <i class="fab fa-github"></i>
                   </span>
                   <span>Code</span>
-                  </a>
-              </span>
-              <!-- Video Link. -->
-              <!-- <span class="link-block">
-                <a href="https://www.youtube.com/watch?v=MrKrnHhk8IA"
-                   class="external-link button is-normal is-rounded is-dark">
-                  <span class="icon">
-                      <i class="fab fa-youtube"></i>
-                  </span>
-                  <span>Video</span>
                 </a>
-              </span> -->
-              <!-- Code Link. -->
-              <!-- <span class="link-block">
-                <a href="https://github.com/google/nerfies"
-                   class="external-link button is-normal is-rounded is-dark">
+              </span>
+
+              <span class="link-block">
+                <a href="https://huggingface.co/collections/owl10/recogdrive-68bafa143de172bab8de5752"
+                  class="external-link button is-normal is-rounded is-warning">
                   <span class="icon">
-                      <i class="fab fa-github"></i>
+                    <i class="fas fa-brain"></i>
                   </span>
-                  <span>Code</span>
-                  </a>
-              </span> -->
-              <!-- Dataset Link. -->
-              <!-- <span class="link-block">
-                <a href="https://github.com/google/nerfies/releases/tag/0.1"
-                   class="external-link button is-normal is-rounded is-dark">
+                  <span>Model Weights</span>
+                </a>
+              </span>
+
+              <span class="link-block">
+                <a href="https://huggingface.co/datasets/owl10/ReCogDrive_Pretraining"
+                  class="external-link button is-normal is-rounded is-info">
                   <span class="icon">
-                      <i class="far fa-images"></i>
+                    <i class="fas fa-database"></i>
                   </span>
                   <span>Data</span>
-                  </a> -->
+                </a>
+              </span>
             </div>
 
           </div>
@@ -188,65 +186,92 @@
       </h2>
     </div>
   </div>
+</section> -->
+
+
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+
+    <!-- Centered title -->
+    <h2 class="title is-3 has-text-centered">Video Demonstration in Bench2Drive</h2>
+
+    <!-- First Row -->
+    <div class="columns is-centered">
+      <div class="column is-6 has-text-centered">
+        <h3 class="subtitle is-5">Route 1</h3>
+        <video autoplay controls muted loop playsinline
+               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+          <source src="./static/video/bench2drive/route_1.mp4" type="video/mp4">
+        </video>
+      </div>
+      <div class="column is-6 has-text-centered">
+        <h3 class="subtitle is-5">Route 2</h3>
+        <video autoplay controls muted loop playsinline
+               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+          <source src="./static/video/bench2drive/route_2.mp4" type="video/mp4">
+        </video>
+      </div>
+    </div>
+
+    <!-- Second Row -->
+    <div class="columns is-centered">
+      <div class="column is-6 has-text-centered">
+        <h3 class="subtitle is-5">Route 3</h3>
+        <video autoplay controls muted loop playsinline
+               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+          <source src="./static/video/bench2drive/route_3.mp4" type="video/mp4">
+        </video>
+      </div>
+      <div class="column is-6 has-text-centered">
+        <h3 class="subtitle is-5">Route 4</h3>
+        <video autoplay controls muted loop playsinline
+               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+          <source src="./static/video/bench2drive/route_4.mp4" type="video/mp4">
+        </video>
+      </div>
+    </div>
+
+    <!-- Third Row -->
+    <!-- <div class="columns is-centered">
+      <div class="column is-6 has-text-centered">
+        <h3 class="subtitle is-5">Route 5</h3>
+        <video autoplay controls muted loop playsinline
+               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+          <source src="./static/video/bench2drive/route_5.mp4" type="video/mp4">
+        </video>
+      </div>
+      <div class="column is-6 has-text-centered">
+        <h3 class="subtitle is-5">Route 6</h3>
+        <video autoplay controls muted loop playsinline
+               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+          <source src="./static/video/bench2drive/route_6.mp4" type="video/mp4">
+        </video>
+      </div>
+    </div>
+
+    <div class="columns is-centered">
+      <div class="column is-6 has-text-centered">
+        <h3 class="subtitle is-5">Route 7</h3>
+        <video autoplay controls muted loop playsinline
+               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+          <source src="./static/video/bench2drive/route_7.mp4" type="video/mp4">
+        </video>
+      </div>
+      <div class="column is-6 has-text-centered">
+        <h3 class="subtitle is-5">Route 8</h3>
+        <video autoplay controls muted loop playsinline
+               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+          <source src="./static/video/bench2drive/route_8.mp4" type="video/mp4">
+        </video>
+      </div>
+    </div> -->
+
+  </div>
 </section>
 
 
-<section class="hero is-light is-small">
-  <div class="hero-body">
-    <div class="container">
-      <div id="results-carousel" class="carousel results-carousel">
-        <div class="item item-steve">
-          <video poster="" id="steve" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/steve.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-chair-tp">
-          <video poster="" id="chair-tp" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/chair-tp.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-shiba">
-          <video poster="" id="shiba" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/shiba.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-fullbody">
-          <video poster="" id="fullbody" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/fullbody.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-blueshirt">
-          <video poster="" id="blueshirt" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/blueshirt.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-mask">
-          <video poster="" id="mask" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/mask.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-coffee">
-          <video poster="" id="coffee" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/coffee.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-toby">
-          <video poster="" id="toby" autoplay controls muted loop playsinline height="100%">
-            <source src="./static/videos/toby2.mp4"
-                    type="video/mp4">
-          </video>
-        </div>
-      </div>
-    </div>
-  </div>
-</section> -->
 
 <style>
   .container.is-max-desktop {
@@ -264,22 +289,7 @@
         <h2 class="title is-3">Abstract</h2>
         <div class="content has-text-justified">
           <p>
-            Although end-to-end autonomous driving has made remarkable progress, its performance degrades significantly in rare and long-tail scenarios. Recent approaches attempt to address this challenge by leveraging the rich world knowledge of Vision-Language Models (VLMs), but these methods suffer from several limitations: 
-          <!-- </p>
-          <p> -->
-            (1) a significant domain gap between the pre-training data of VLMs and real-world driving data, 
-          <!-- </p>
-          <p> -->
-            (2) a dimensionality mismatch between the discrete language space and the continuous action space, 
-          <!-- </p>
-          <p> -->
-            (3) imitation learning tends to capture the average behavior present in the dataset, which may be suboptimal even dangerous.
-          <!-- </p>
-          <p> -->
-            In this paper, we propose CogDrive, an autonomous driving system that integrates VLMs with a diffusion planner, adopting a three-stage paradigm for training. In the first stage, we use a large-scale driving question-answering dataset to train the VLMs, mitigating the domain discrepancy between generic content and real-world driving scenarios.
-            In the second stage, we employ a diffusion-based planner to perform imitation learning, mapping representations from the latent language space to continuous driving actions. Finally, we fine-tune the diffusion planner using reinforcement learning in the NAVSIM non-reactive simulator, enabling the model to generate safer, more human-like driving trajectories.
-            We evaluate our approach on the planning-oriented NAVSIM benchmark, achieving a PDMS of 89.6 and setting a new state-of-the-art that surpasses the previous vision-only SOTA by 5.6 PDMS.
-          <!-- </p> -->
+            Recent studies have explored leveraging the world knowledge and cognitive capabilities of Vision-Language Models (VLMs) to address the long-tail problem in end-to-end autonomous driving. However, existing methods typically formulate trajectory planning as a language modeling task, where physical actions are output in the language space, potentially leading to issues such as format-violating outputs, infeasible actions, and slow inference speeds. In this paper, we propose ReCogDrive, a novel Reinforced Cognitive framework for end-to-end autonomous Driving, unifying driving understanding and planning by integrating an autoregressive model with a diffusion planner. First, to instill human driving cognition into the VLM, we introduce a hierarchical data pipeline that mimics the sequential cognitive process of human drivers through three stages: generation, refinement, and quality control. Building on this cognitive foundation, we then address the language-action mismatch by injecting the VLM's learned driving priors into a diffusion planner to efficiently generate continuous and stable trajectories. Furthermore, to enhance driving safety and reduce collisions, we introduce a Diffusion Group Relative Policy Optimization (DiffGRPO) stage, reinforcing the planner for enhanced safety and comfort. Extensive experiments on the NAVSIM and Bench2Drive benchmarks demonstrate that ReCogDrive achieves state-of-the-art performance. Additionally, qualitative results across diverse driving scenarios and DriveBench highlight the model's scene comprehension. Code and models are available at https://github.com/xiaomi-research/recogdrive.
           
           </p>
         </div>
@@ -336,6 +346,28 @@
   }
 </style>
 
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-5">Scalable Hierarchical Data Pipeline For Drive Pretraining</h2>
+      </div>
+    </div>
+    <div class="columns is-centered">
+      <div class="column is-four-fifths">
+        <div class="publication-image-main">
+          <img src="./static/images/data_pipeline.png" alt="Data Pipeline Diagram">
+          <p class="publication-caption">
+            To instill human driving cognition into the VLM, we introduce a scalable, structured data pipeline. The pipeline employs a three-stage process of Generation, Refinement, and Quality Control to produce a high-quality dataset that mimics the human cognitive process. At the core of the Generation stage, we create a "Hierarchical Cognitive VQA" corpus, with tasks structured along four levels of cognitive complexity—from Foundational Perception to Advanced Reasoning—to systematically build the model's driving intelligence.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
 <section class="section">
   <div class="container is-max-desktop">
     <div class="columns is-centered has-text-centered">
@@ -348,9 +380,9 @@
   <div class="columns is-centered">
     <div class="column is-four-fifths">
       <div class="publication-image-main">
-        <img src="./static/images/nips-main-fig-v2.jpg" alt="ReCogDrive System Overview">
+        <img src="./static/images/nips-main-fig-v2.png" alt="ReCogDrive System Overview">
         <p class="publication-caption">
-          Overview of the ReCogDrive architecture and training pipeline. The system consists of a Vision-Language Model (VLM) and a diffusion planner. It takes as input a front-view image, navigation command, ego states, and task instruction. The VLM encodes multimodal information into latent features, which are passed to the diffusion planner to generate future trajectories by denoising from random noise. Training follows a three-stage paradigm: (1) the VLM is pre-trained on a large-scale driving QA dataset to adapt it to driving scenario; (2) the VLM is then frozen, and the diffusion planner is trained via imitation learning to mimic expert driving behaviors; (3) the planner is further fine-tuned using reinforcement learning with the assistance of the NAVSIM simulator, enabling it to predict safer, more stable, and more comfortable trajectories.
+          The ReCogDrive architecture synergistically integrates a cognitive Vision-Language Model (VLM) with a generative diffusion planner. Given multi-view images and a driving command, the VLM produces latent cognitive representations that encapsulate its scene understanding. These representations then guide the diffusion planner, which generates a continuous and stable trajectory by iteratively denoising from random noise. The framework is trained via a paradigm designed to systematically address the key challenges in VLM-based driving: (1) To bridge the domain gap, the VLM is first adapted by pre-training on our large-scale, hierarchical QA dataset to instill it with human driving cognition. (2) To resolve the modality mismatch, the diffusion planner is then trained via imitation learning to translate the VLM's cognitive priors into continuous trajectories. (3) Finally, to overcome the limitations of imitation learning, the planner is fine-tuned using our Diffusion Group Relative Policy Optimization (DiffGRPO) algorithm with performance-based rewards, reinforcing the policy for enhanced safety and comfort.
           
         </p>
       </div>
@@ -377,7 +409,7 @@
   <div class="container is-max-desktop">
     <div class="columns is-centered has-text-centered">
       <div class="column is-four-fifths">
-        <h2 class="title is-5">Simulator-assisted Reinforcement Learning.</h2>
+        <h2 class="title is-5">Diffusion Group Relative Policy Optimization (DiffGRPO)</h2>
       </div>
     </div>
   </div>
@@ -387,7 +419,8 @@
         <img src="./static/images/20250606-111433.png" alt="Comparison of Imitation Learning and Simulator-assisted Reinforcement Learning">
         <br>
         <p class="content has-text-justified">
-          Imitation learning often struggles with the inherent diversity of expert demonstrations, which can lead to averaged and suboptimal trajectories, as illustrated in (a). ReCogDrive addresses this limitation with simulator-assisted reinforcement learning (RL), enabling the diffusion planner to explore and learn robust driving behaviors in a simulated environment. In (b), multiple trajectories are sampled from the diffusion planner within the non-reactive NAVSIM simulator and evaluated on safety, drivability, and comfort to compute a Predictive Driver Model Score (PDMS) as the reward. This reward is then processed through group computation to derive advantages, which are used to compute the policy loss. To ensure stability during learning, we combine the RL objective with a behavior cloning loss. This enables ReCogDrive to predict safer, smoother, and more reliable trajectories beyond imitation.
+          Imitation learning often struggles with multi-modal expert data, leading to unsafe "averaged" trajectories, as shown in (a). To overcome this, we introduce DiffGRPO, a reinforcement learning algorithm that directly optimizes the diffusion planner's generative process. As illustrated in (b), we treat the iterative denoising of a trajectory as a policy rollout. Multiple trajectories are sampled and evaluated in the NAVSIM simulator to obtain a Predictive Driver Model Score (PDMS) as a reward signal. This reward is then used to compute group-standardized advantages, which guide the policy update. By combining this reinforcement objective with a stabilizing behavior cloning loss, DiffGRPO enables the planner to learn safer and more comfortable behaviors by exploring the consequences of its own generative choices, moving beyond the confines of mere imitation.
+
         </p>        
       </div>
     </div>
@@ -416,7 +449,7 @@
   <div class="container is-max-desktop">
     <div class="columns is-centered has-text-centered">
       <div class="column is-four-fifths">
-        <h2 class="title is-5">Performance comparison on NAVSIM.</h2>
+        <h2 class="title is-5">Performance comparison on NAVSIM</h2>
       </div>
     </div>
   </div>
@@ -426,7 +459,29 @@
         <img src="./static/images/screenshot-20250606-111540.png" alt="Performance comparison on NAVSIM benchmark" >
         <br>
         <p class="content">
-          The above figure presents the performance comparison on the NAVSIM benchmark. ReCogDrive achieves a Predictive Driver Model Score (PDMS) of 89.6, setting a new state-of-the-art. Despite relying solely on camera inputs, it surpasses LiDAR-augmented models such as DiffusionDrive and WoTE by 1.5 and 1.2 PDMS, respectively. Compared to fine-tuned baselines like InternVL3 and QwenVL2.5, ReCogDrive delivers a significant improvement of 6.3 PDMS, demonstrating the effectiveness of our three-stage training framework. It also outperforms the previous best camera-only method, PARA-Drive, by 5.6 PDMS.
+          The above figure presents the performance comparison on the NAVSIM benchmark. ReCogDrive achieves a Predictive Driver Model Score (PDMS) of 90.8, setting a new state-of-the-art. Despite relying solely on camera inputs, it surpasses LiDAR-augmented models such as DiffusionDrive and WoTE by 2.5 and 2.7 PDMS, respectively. Compared to fine-tuned baselines like InternVL3 and QwenVL2.5, ReCogDrive delivers a significant improvement of 7.5 PDMS, demonstrating the effectiveness of our three-stage training framework. It also outperforms the previous best camera-only method, PARA-Drive, by 6.8 PDMS.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-5">Performance comparison on Bench2Drive</h2>
+      </div>
+    </div>
+  </div>
+  <div class="columns is-centered has-text-centered">
+    <div class="column is-four-fifths">
+      <div class="publication-image-fig">
+        <img src="./static/images/b2d.png" alt="Performance comparison on NAVSIM benchmark" >
+        <br>
+        <p class="content">
+
+          The above figure reports closed-loop and multi-ability results on the CARLA Bench2Drive leaderboard. ReCogDrive achieves the highest scenario success rate of 45.45% and the top Driving Score of 71.36, surpassing prior end-to-end baselines. It also excels in safety-critical skills such as emergency braking 69.09% and traffic sign compliance 71.34, while maintaining strong efficiency and a competitive multi-ability mean of 42.03. These results highlight the effectiveness and reliability of our framework in complex urban driving.  
         </p>
       </div>
     </div>
@@ -452,14 +507,14 @@
   <div class="container is-max-desktop">
     <div class="columns is-centered has-text-centered">
       <div class="column is-four-fifths">
-        <h2 class="title is-5">Visualization.</h2>
+        <h2 class="title is-5">Visualization</h2>
       </div>
     </div>
   </div>
   <div class="columns is-centered"> <div class="column"> <div class="publication-image-vis"> <img src="./static/images/20250606-220651.png" alt="ReCogDrive Perception and Planning Visualization Example">
         <br>
         <p class="content has-text-justified">
-          This visualization showcases ReCogDrive's comprehensive perception and planning capabilities. As demonstrated in the figure, in addition to generating precise and smooth trajectory predictions, our system also produces accurate scene summaries and clear, high-level driving instructions. ReCogDrive accurately identifies critical objects like taxis and traffic lights, seamlessly integrating this cognitive understanding to inform its robust planning decisions, demonstrating true end-to-end autonomous driving with enhanced cognition.
+          We compare ReCogDrive (IL and RL) with Transfuser~\citep{chitta2022transfuser}, where RL yields safer and more reliable trajectories in challenging turning scenarios. More visualizations are in the supplementary material.
         </p>
       </div>
     </div>
