@@ -82,17 +82,33 @@
   </div>
 </nav> -->
 
+<style>
+  .publication-image-main {
+    max-width: 1000px;   /* 限制最大宽度，避免大屏过宽 */
+    margin: 0 auto;      /* 居中容器 */
+    text-align: left;    /* caption 左对齐（或改 justify） */
+  }
+  .publication-image-main img {
+    width: 100%;         /* 图片宽度占满容器 */
+    height: auto;        /* 保持比例 */
+    object-fit: contain; /* 避免拉伸 */
+  }
+  .publication-caption {
+    margin-top: 10px;
+    font-size: 0.95em;   /* 稍微小一点像论文 figure caption */
+    text-align: justify; /* 两端对齐 */
+  }
+</style>
 
 <section class="hero">
   <div class="hero-body">
     <div class="container is-max-desktop">
       <div class="columns is-centered">
         <div class="column has-text-centered">
-          <h2 class="title is-4 publication-title">
-            <span class="icon-text" style="display: flex; align-items: center; gap: 0.5em;">
-              <img src="./static/images/logo2.png" alt="icon" style="width: 3em; height: 3em;">
-              <span>ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving</span>
-            </span>
+          <h2 class="title is-4 publication-title" 
+              style="display: flex; justify-content: center; align-items: center; gap: 0.5em; text-align: center;">
+            <img src="./static/images/logo2.png" alt="icon" style="width: 3em; height: 3em;">
+            <span>ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving</span>
           </h2>
           <div class="is-size-5 publication-authors">
             <span class="author-block"><a href="https://owl-10.github.io/yongkangli/"><strong>Yongkang Li</strong></a><sup>1,2*</sup>,</span>
@@ -215,9 +231,6 @@
         </div>
       </div>
     </div>
-    <!--/ Abstract. -->
-
-    <!-- Paper video. -->
     <div class="columns is-centered has-text-centered">
       <div class="column is-four-fifths">
         <div class="publication-image">
@@ -231,40 +244,21 @@
 
 
 <style>
-  .publication-image-main {
-    width: 1000px; /* Set fixed width for the container of image and text */
-    margin: 0 auto; /* Center the container within its parent column */
-    text-align: left; /* Ensure text inside is left-aligned for justification */
+  .publication-image-arch {
+    max-width: 650px;   /* 比 pipeline 略小，比如 700px */
+    margin: 0 auto;     /* 居中 */
   }
-  .publication-image-main img {
-    width: 1000px;  /* Image width matches its container */
-    height: 550px; /* Set fixed height */
-    object-fit: contain;  /* Maintains aspect ratio while filling the box */
-  }
-  /* The .column.is-four-fifths has text-align: center applied,
-     which centers block-level elements like the <p> tag itself if not explicitly overridden.
-     While text-align: left is set on .publication-image-main,
-     we ensure has-text-justified works as expected. */
-</style>
 
-
-<style>
-  .publication-image-main {
-    width: 820px;
-    margin: 0 auto;
-    text-align: left;
-  }
-  .publication-image-main img {
-    width: 100%;
+  .publication-image-arch img {
+    width: 100%;        /* 图片跟随容器缩放 */
     height: auto;
     object-fit: contain;
   }
-  .publication-caption {
-    width: 100%;
-    margin-top: 10px;
-    text-align: justify;
-  }
+
 </style>
+
+
+
 
 
 <section class="section">
@@ -299,7 +293,7 @@
 
   <div class="columns is-centered">
     <div class="column is-four-fifths">
-      <div class="publication-image-main">
+      <div class="publication-image-main publication-image-arch">
         <img src="./static/images/nips-main-fig-v2.png" alt="ReCogDrive System Overview">
         <p class="publication-caption">
           The ReCogDrive architecture synergistically integrates a cognitive Vision-Language Model (VLM) with a generative diffusion planner. Given multi-view images and a driving command, the VLM produces latent cognitive representations that encapsulate its scene understanding. These representations then guide the diffusion planner, which generates a continuous and stable trajectory by iteratively denoising from random noise. The framework is trained via a paradigm designed to systematically address the key challenges in VLM-based driving: (1) To bridge the domain gap, the VLM is first adapted by pre-training on our large-scale, hierarchical QA dataset to instill it with human driving cognition. (2) To resolve the modality mismatch, the diffusion planner is then trained via imitation learning to translate the VLM's cognitive priors into continuous trajectories. (3) Finally, to overcome the limitations of imitation learning, the planner is fine-tuned using our Diffusion Group Relative Policy Optimization (DiffGRPO) algorithm with performance-based rewards, reinforcing the policy for enhanced safety and comfort.
