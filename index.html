@@ -81,26 +81,105 @@
 
   </div>
 </nav> -->
-
 <style>
-  .publication-image-main {
-    max-width: 1000px;   /* 限制最大宽度，避免大屏过宽 */
-    margin: 0 auto;      /* 居中容器 */
-    text-align: left;    /* caption 左对齐（或改 justify） */
-  }
-  .publication-image-main img {
-    width: 100%;         /* 图片宽度占满容器 */
-    height: auto;        /* 保持比例 */
-    object-fit: contain; /* 避免拉伸 */
-  }
-  .publication-caption {
-    margin-top: 10px;
-    font-size: 0.95em;   /* 稍微小一点像论文 figure caption */
-    text-align: justify; /* 两端对齐 */
+  .container.is-max-desktop {
+    max-width: 55%; /* Allows the container to take up the full width of the parent */
+    height: auto; 
   }
 </style>
 
-<section class="hero">
+<style>
+/* === 基础容器收紧 === */
+.section {
+  padding-top: 1.8rem !important;
+  padding-bottom: 1.8rem !important;
+}
+
+.container.is-max-desktop {
+  max-width: 900px !important;   /* 所有主体宽度统一为 900px */
+}
+
+/* === 标题与段落距离统一 === */
+h1.title, h2.title, h3.title {
+  margin-bottom: 1rem !important;
+}
+
+p, .publication-caption {
+  margin-top: 0.5rem !important;
+  margin-bottom: 0.8rem !important;
+  line-height: 1.55 !important;
+  text-align: justify !important;
+}
+
+/* === 图片模块统一宽度 === */
+.publication-image-main,
+.publication-image-arch,
+.publication-image-rl,
+.publication-image-fig,
+.publication-image-vis {
+  max-width: 900px !important;
+  margin: 0 auto !important;
+  text-align: center !important;
+}
+
+.publication-image-main img,
+.publication-image-arch img,
+.publication-image-rl img,
+.publication-image-fig img,
+.publication-image-vis img {
+  width: 100% !important;
+  height: auto !important;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+/* === 视频区域统一样式 === */
+video {
+  display: block;
+  width: 100% !important;
+  max-width: 900px !important;
+  height: auto;
+  border-radius: 8px;
+  border: 2px solid #444;
+  margin: 0 auto !important;
+}
+
+/* === Columns 间距压缩 === */
+.columns {
+  margin-top: 0.8rem !important;
+  margin-bottom: 0.8rem !important;
+}
+
+/* === 每个 Section 之间间距减小 === */
+.section + .section {
+  margin-top: 1.2rem !important;
+}
+
+/* === 让 Abstract、视频、图表完全居中对齐 === */
+.has-text-centered {
+  text-align: center !important;
+}
+
+.column.is-four-fifths,
+.column.is-6,
+.column.is-centered {
+  flex: 0 0 100% !important;  /* 让所有列满宽度 */
+  max-width: 900px !important;
+  margin: 0 auto !important;
+}
+
+/* === Abstract 区块收紧 === */
+.abstract-section {
+  max-width: 900px !important;
+  margin: 0 auto !important;
+  font-size: 1em !important;
+  line-height: 1.55 !important;
+}
+
+
+</style>
+
+<section class="hero hero-publication">
   <div class="hero-body">
     <div class="container is-max-desktop">
       <div class="columns is-centered">
@@ -209,12 +288,6 @@
 
 
 
-<style>
-  .container.is-max-desktop {
-    max-width: 55%; /* Allows the container to take up the full width of the parent */
-    height: auto; 
-  }
-</style>
 
 
 <section class="section">
@@ -293,7 +366,7 @@
 
   <div class="columns is-centered">
     <div class="column is-four-fifths">
-      <div class="publication-image-main publication-image-arch">
+      <div class="publication-image-main">
         <img src="./static/images/nips-main-fig-v2.png" alt="ReCogDrive System Overview">
         <p class="publication-caption">
           The ReCogDrive architecture synergistically integrates a cognitive Vision-Language Model (VLM) with a generative diffusion planner. Given multi-view images and a driving command, the VLM produces latent cognitive representations that encapsulate its scene understanding. These representations then guide the diffusion planner, which generates a continuous and stable trajectory by iteratively denoising from random noise. The framework is trained via a paradigm designed to systematically address the key challenges in VLM-based driving: (1) To bridge the domain gap, the VLM is first adapted by pre-training on our large-scale, hierarchical QA dataset to instill it with human driving cognition. (2) To resolve the modality mismatch, the diffusion planner is then trained via imitation learning to translate the VLM's cognitive priors into continuous trajectories. (3) Finally, to overcome the limitations of imitation learning, the planner is fine-tuned using our Diffusion Group Relative Policy Optimization (DiffGRPO) algorithm with performance-based rewards, reinforcing the policy for enhanced safety and comfort.
@@ -329,7 +402,7 @@
   </div>
   <div class="columns is-centered has-text-centered">
     <div class="column is-four-fifths">
-      <div class="publication-image-rl">
+      <div class="publication-image-main">
         <img src="./static/images/20250606-111433.png" alt="Comparison of Imitation Learning and Simulator-assisted Reinforcement Learning">
         <br>
         <p class="content has-text-justified">
@@ -369,7 +442,7 @@
   </div>
   <div class="columns is-centered has-text-centered">
     <div class="column is-four-fifths">
-      <div class="publication-image-fig">
+      <div class="publication-image-main">
         <img src="./static/images/screenshot-20250606-111540.png" alt="Performance comparison on NAVSIM benchmark" >
         <br>
         <p class="content">
@@ -390,7 +463,7 @@
   </div>
   <div class="columns is-centered has-text-centered">
     <div class="column is-four-fifths">
-      <div class="publication-image-fig">
+      <div class="publication-image-main">
         <img src="./static/images/b2d.png" alt="Performance comparison on NAVSIM benchmark" >
         <br>
         <p class="content">
@@ -425,7 +498,7 @@
       </div>
     </div>
   </div>
-  <div class="columns is-centered"> <div class="column"> <div class="publication-image-vis"> <img src="./static/images/20250606-220651.png" alt="ReCogDrive Perception and Planning Visualization Example">
+  <div class="columns is-centered"> <div class="column"> <div class="publication-image-main"> <img src="./static/images/20250606-220651.png" alt="ReCogDrive Perception and Planning Visualization Example">
         <br>
         <p class="content has-text-justified">
           We compare ReCogDrive (IL and RL) with Transfuser, where RL yields safer and more reliable trajectories in challenging turning scenarios. More visualizations are in the supplementary material.
@@ -435,8 +508,7 @@
   </div>
 </section>
 
-
-<section class="section">
+<section class="section bench2drive-section">
   <div class="container is-max-desktop">
 
     <!-- Centered title -->
@@ -446,15 +518,13 @@
     <div class="columns is-centered">
       <div class="column is-6 has-text-centered">
         <h3 class="subtitle is-5">Red Light Left Turn</h3>
-        <video autoplay controls muted loop playsinline
-               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+        <video autoplay controls muted loop playsinline>
           <source src="./static/video/bench2drive/converted/route_1.mp4" type="video/mp4">
         </video>
       </div>
       <div class="column is-6 has-text-centered">
         <h3 class="subtitle is-5">Left Turn</h3>
-        <video autoplay controls muted loop playsinline
-               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+        <video autoplay controls muted loop playsinline>
           <source src="./static/video/bench2drive/converted/route_2.mp4" type="video/mp4">
         </video>
       </div>
@@ -464,15 +534,13 @@
     <div class="columns is-centered">
       <div class="column is-6 has-text-centered">
         <h3 class="subtitle is-5">Merge to Slow Lane</h3>
-        <video autoplay controls muted loop playsinline
-               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+        <video autoplay controls muted loop playsinline>
           <source src="./static/video/bench2drive/converted/route_3.mp4" type="video/mp4">
         </video>
       </div>
       <div class="column is-6 has-text-centered">
         <h3 class="subtitle is-5">Narrow Road Interaction</h3>
-        <video autoplay controls muted loop playsinline
-               style="width: 100%; border-radius: 10px; border: 3px solid #444;">
+        <video autoplay controls muted loop playsinline>
           <source src="./static/video/bench2drive/converted/route_4.mp4" type="video/mp4">
         </video>
       </div>
@@ -480,6 +548,7 @@
 
   </div>
 </section>
+
 
 
 <section class="section" id="BibTeX">

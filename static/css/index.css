@@ -1,7 +1,9 @@
 body {
-  font-family: 'Noto Sans', sans-serif;
+  font-family: 'Noto Sans', 'Helvetica Neue', Arial, sans-serif;
+  line-height: 1.55;
+  color: #222;
+  background-color: #fff;
 }
-
 
 .footer .icon-link {
     font-size: 25px;
@@ -166,3 +168,231 @@ body {
 #interpolation-image-wrapper img {
   border-radius: 5px;
 }
+/* === FORCE OVERRIDE STYLES === */
+/* === 终极生效版 === */
+
+/* ✅ 缩小 Section 间距（彻底覆盖） */
+.section,
+.hero-body {
+  margin-top: 0 !important;
+  margin-bottom: 0.5rem !important;
+}
+
+/* 连续 section 之间间距统一 */
+.section + .section {
+  margin-top: 0.6rem !important;
+  border-top: 1px solid #eee;
+}
+
+/* ✅ 控制最大宽度 */
+.container.is-max-desktop {
+  max-width: 860px !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+  box-sizing: border-box;
+}
+
+/* ✅ 强制缩小视频宽度，覆盖所有父层布局 */
+video,
+.section video,
+.column video,
+.hero video {
+  display: block !important;
+  margin: 0.5rem auto !important;
+  width: 75% !important;          /* 关键：统一缩小 */
+  max-width: 760px !important;    /* 限制最大宽度 */
+  height: auto !important;
+  border-radius: 10px !important;
+  border: 1px solid #888 !important;
+  object-fit: contain !important;
+  flex: none !important;          /* 禁止 flex 拉伸 */
+  align-self: center !important;  /* 居中 */
+}
+
+/* ✅ 缩小 columns 默认间距 */
+.columns {
+  margin-top: 0.3rem !important;
+  margin-bottom: 0.3rem !important;
+}
+
+/* 图片与视频统一 */
+.publication-image-main img,
+.publication-image-arch img,
+.publication-image-rl img,
+.publication-image-fig img,
+.publication-image-vis img {
+  display: block !important;
+  margin: 0.4rem auto !important;
+  width: 85% !important;
+  max-width: 820px !important;
+  height: auto !important;
+  border-radius: 8px !important;
+  border: 1px solid #ccc !important;
+}
+
+/* ✅ 统一段落和标题 */
+h1.title, h2.title, h3.title {
+  font-family: 'Google Sans', 'Noto Sans', sans-serif;
+  font-weight: 600;
+  color: #111;
+  text-align: center;
+}
+
+.content p {
+  margin-top: 0.2rem !important;
+  margin-bottom: 0.3rem !important;
+  line-height: 1.45 !important;
+  text-align: justify !important;
+}
+
+/* ✅ 多视频区域（双列等距） */
+.video-container {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: center !important;
+  gap: 0.5rem !important;
+}
+
+.video-container video {
+  flex: 1 1 45% !important;
+  max-width: 360px !important;
+}
+
+/* ✅ BibTeX 美化 */
+#BibTeX pre {
+  background: #f8f8f8;
+  border-radius: 6px;
+  padding: 0.5rem !important;
+  font-size: 0.9em;
+  line-height: 1.4;
+  overflow-x: auto;
+}
+/* 缩小视频 + 居中 + 统一样式 */
+/* === Bench2Drive 视频专属样式 === */
+.bench2drive-section .columns.is-centered {
+  display: flex !important;
+  justify-content: center !important;
+  flex-wrap: wrap !important;
+  gap: 0.4rem !important;            /* 控制左右间距 */
+  column-gap: 0.4rem !important;
+  row-gap: 0.4rem !important;        /* 控制上下间距 */
+  margin: 0 auto !important;
+  width: 100%;
+}
+
+.bench2drive-section .columns.is-centered > .column {
+  flex: 1 1 47% !important;          /* 两列紧凑分布 */
+  max-width: 47% !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.bench2drive-section video {
+  display: block;
+  margin: 0.25rem auto !important;
+  width: 90% !important;
+  max-width: 420px !important;
+  border-radius: 10px;
+  border: 2px solid #444;
+}
+
+.bench2drive-section .subtitle.is-5 {
+  margin-top: 0.3rem !important;
+  margin-bottom: 0.25rem !important;
+}
+
+.bench2drive-section .section {
+  padding-top: 0.4rem !important;
+  padding-bottom: 0.4rem !important;
+  margin-bottom: 0.4rem !important;
+}
+/* ============================================
+   🧠 ReCogDrive Title Hero Section
+   ============================================ */
+
+/* ===========================
+   🧠 ReCogDrive 标题区块样式
+   =========================== */
+
+.hero-publication {
+  background: linear-gradient(135deg,
+    rgb(138,131,177) 0%,
+    rgb(232,230,238) 45%,
+    rgb(255,242,204) 70%,
+    rgb(255,217,110) 100%) !important;
+  color: #ffffff !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15) !important;
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+}
+
+/* 防止 Bulma 默认颜色覆盖 */
+.hero.is-light,
+.hero.is-white,
+.hero.is-dark {
+  background: none !important;
+}
+
+/* 内层对齐与排版 */
+.hero-publication .hero-body {
+  padding-top: 1.5rem !important;
+  padding-bottom: 1.5rem !important;
+}
+
+/* 标题 */
+.hero-publication .publication-title {
+  font-family: 'Google Sans', 'Noto Sans', sans-serif;
+  font-weight: 600;
+  color: #111 !important;
+  text-align: center;
+  line-height: 1.4;
+  margin-bottom: 0.8rem !important;
+}
+
+/* 图标 */
+.hero-publication .publication-title img {
+  width: 2.6em;
+  height: 2.6em;
+  vertical-align: middle;
+}
+
+/* 作者部分 */
+.hero-publication .publication-authors {
+  font-size: 1.05rem;
+  color: #333 !important;
+  line-height: 1.6;
+}
+
+.hero-publication .publication-authors a {
+  color: #0077cc !important;
+  text-decoration: none;
+}
+
+.hero-publication .publication-authors a:hover {
+  text-decoration: underline;
+}
+
+/* 链接按钮部分 */
+.hero-publication .publication-links {
+  margin-top: 1.2rem !important;
+}
+
+.hero-publication .button {
+  box-shadow: none !important;
+  font-weight: 500;
+  border: none !important;
+  transition: all 0.2s ease;
+}
+
+/* 按钮 hover 轻微变化 */
+.hero-publication .button:hover {
+  transform: translateY(-2px);
+}
+
+/* 深浅色按钮 hover 色 */
+.hero-publication .button.is-primary:hover { background: #276cda !important; }
+.hero-publication .button.is-dark:hover { background: #333 !important; }
+.hero-publication .button.is-warning:hover { background: #d79a00 !important; }
+.hero-publication .button.is-info:hover { background: #2689a8 !important; }
