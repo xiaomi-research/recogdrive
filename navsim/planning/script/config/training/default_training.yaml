@@ -18,6 +18,9 @@ split: trainval
 cache_path: ${oc.env:NAVSIM_EXP_ROOT}/training_cache_transfuser
 use_cache_without_dataset: false # load the training samples from the cache. scene-filter will be ignored
 force_cache_computation: true
+waymoe2e: false
+waymoe2e_train_split: training
+waymoe2e_val_split: val
 seed: 0
 
 use_deepspeed: True

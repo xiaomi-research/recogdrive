@@ -137,6 +137,47 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         return (features, targets, token)
 
 
+class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
+    """Dataset wrapper for RAP-style Waymo E2E feature/target caches."""
+
+    def __init__(self, cache_path: str, split: str):
+        """
+        Initializes the Waymo E2E cached dataset.
+        :param cache_path: root cache folder with split subfolders.
+        :param split: split folder name, e.g. "training" or "val".
+        """
+        super().__init__()
+        split_path = Path(cache_path) / split
+        assert split_path.is_dir(), f"Waymo E2E cache split path {split_path} does not exist!"
+        self._cache_path = split_path
+        self.tokens = sorted(
+            token_path
+            for token_path in self._cache_path.iterdir()
+            if token_path.is_dir()
+            and (token_path / "features.gz").is_file()
+            and (token_path / "targets.gz").is_file()
+        )
+
+    def __len__(self) -> int:
+        """
+        :return: number of cached samples to load.
+        """
+        return len(self.tokens)
+
+    def __getitem__(self, idx: int) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], str]:
+        """
+        Loads and returns a feature dict, target dict, and token string.
+        :param idx: index of sample to load.
+        :return: tuple of feature dictionary, target dictionary, and token.
+        """
+        token_path = self.tokens[idx]
+
+        features = load_feature_target_from_pickle(token_path / "features.gz")
+        targets = load_feature_target_from_pickle(token_path / "targets.gz")
+
+        return features, targets, token_path.name
+
+
 class Dataset(torch.utils.data.Dataset):
     def __init__(
         self,

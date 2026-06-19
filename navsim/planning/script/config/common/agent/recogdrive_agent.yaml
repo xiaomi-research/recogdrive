@@ -17,6 +17,10 @@ cache_hidden_state: True
 metric_cache_path: ''
 reference_policy_checkpoint: ''
 vlm_size: 'small'
+vlm_hidden_size: null
 train_backbone: false
+training_target: 'waypoint'
+flow_noise_level: 0.7
+flow_sde_type: 'sde'
 grpo: False
 lr: 1e-4

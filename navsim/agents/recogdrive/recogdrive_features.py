@@ -10,6 +10,7 @@ from navsim.planning.training.abstract_feature_target_builder import AbstractFea
 from navsim.common.dataclasses import Scene, Trajectory
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from .recogdrive_backbone import RecogDriveBackbone
+from .trajectory_utils import validate_training_target, waypoint_to_delta
 from .utils.internvl_preprocess import load_image
 
 def format_number(n, decimal_places=2):
@@ -40,6 +41,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
         self.cache_hidden_state = cache_hidden_state
         self.backbone = None
         self.cache_mode = cache_mode
+        self.model_type = model_type.lower() if model_type else None
 
         if self.cache_hidden_state and self.cache_mode:
             if not model_type or not checkpoint_path:
@@ -87,11 +89,15 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             if self.backbone is None:
                 raise RuntimeError("FeatureBuilder is in online mode, but the backbone was not initialized.")
             
-            pixel_values = load_image(str(cameras[-1].cam_f0.image),max_num=12).unsqueeze(0)
-
-            pixel_values_squeezed = pixel_values.squeeze(1)
-            num_patches_list = [pv.shape[0] for pv in pixel_values_squeezed]
-            pixel_values_cat = torch.cat(list(pixel_values_squeezed), dim=0)
+            image_path = str(cameras[-1].cam_f0.image)
+            if self.model_type == "qwen":
+                pixel_values_cat = [image_path]
+                num_patches_list = None
+            else:
+                pixel_values = load_image(image_path, max_num=12).unsqueeze(0)
+                pixel_values_squeezed = pixel_values.squeeze(1)
+                num_patches_list = [pv.shape[0] for pv in pixel_values_squeezed]
+                pixel_values_cat = torch.cat(list(pixel_values_squeezed), dim=0)
 
             navigation_commands = ['turn left', 'go straight', 'turn right']
             command_str = next((navigation_commands[i] for i, v in enumerate(high_command_one_hot) if v == 1), "unknown")
@@ -101,7 +107,9 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             output_requirements = "\nOutput requirements:\n- Predict 8 future trajectory points\n- Each point format: (x:float, y:float, heading:float)\n- Use [PT, ...] to encapsulate the trajectory\n- Maintain numerical precision to 2 decimal places"
             questions = [f"{prompt}{output_requirements}"]
 
-            outputs = self.backbone(pixel_values_cat.cuda(), questions, num_patches_list=num_patches_list)
+            if isinstance(pixel_values_cat, torch.Tensor):
+                pixel_values_cat = pixel_values_cat.cuda()
+            outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
             last_hidden_state = outputs.hidden_states[-1]
 
             return {
@@ -113,12 +121,16 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
 
 
 class TrajectoryTargetBuilder(AbstractTargetBuilder):
-    def __init__(self, trajectory_sampling: TrajectorySampling):
+    def __init__(self, trajectory_sampling: TrajectorySampling, training_target: str = "waypoint"):
         self._trajectory_sampling = trajectory_sampling
+        self.training_target = validate_training_target(training_target)
 
     def get_unique_name(self) -> str:
         return "trajectory_target"
 
     def compute_targets(self, scene: Scene) -> Dict[str, torch.Tensor]:
         future_trajectory = scene.get_future_trajectory(num_trajectory_frames=self._trajectory_sampling.num_poses)
-        return {"trajectory": torch.tensor(future_trajectory.poses)}
+        trajectory = torch.tensor(future_trajectory.poses, dtype=torch.float32)
+        if self.training_target == "delta":
+            trajectory = waypoint_to_delta(trajectory, self._trajectory_sampling.interval_length)
+        return {"trajectory": trajectory}

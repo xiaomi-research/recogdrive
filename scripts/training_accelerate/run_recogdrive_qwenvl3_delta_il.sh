@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODEL_FAMILY=qwenvl3 TRAINING_TARGET=delta TRAIN_STAGE=il \
+  bash "${SCRIPT_DIR}/run_recogdrive_accel_variant.sh"

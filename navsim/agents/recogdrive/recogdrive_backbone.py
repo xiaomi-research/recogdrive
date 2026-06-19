@@ -1,8 +1,29 @@
 from typing import List, Optional, Tuple, Union
 import torch
 from torch import nn
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoProcessor, AutoTokenizer
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from PIL import Image
+
+try:
+    from transformers import Qwen3VLForConditionalGeneration
+except ImportError:
+    Qwen3VLForConditionalGeneration = None
+
+try:
+    from transformers import AutoModelForMultimodalLM
+except ImportError:
+    AutoModelForMultimodalLM = None
+
+try:
+    from transformers import Qwen2_5_VLForConditionalGeneration
+except ImportError:
+    Qwen2_5_VLForConditionalGeneration = None
+
+try:
+    from qwen_vl_utils import process_vision_info
+except ImportError:
+    process_vision_info = None
 
 from .utils.conversation import get_conv_template
 
@@ -68,12 +89,13 @@ class RecogDriveBackbone(nn.Module):
             self.num_image_token = 256
 
         elif self.model_type == 'qwen':
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            qwen_model_cls = self._get_qwen_model_class(checkpoint_path)
+            self.model = qwen_model_cls.from_pretrained(
                 checkpoint_path,
                 torch_dtype=torch.bfloat16,
                 device_map=self.device,
                 trust_remote_code=True
-            )
+            ).eval()
             self.tokenizer = AutoProcessor.from_pretrained(
                 checkpoint_path,
                 trust_remote_code=True
@@ -92,9 +114,30 @@ class RecogDriveBackbone(nn.Module):
         self.model.img_context_token_id = self.img_context_token_id
         print("InternVL model configured.")
     
-    def forward(self, pixel_values: torch.Tensor, questions: List[str], num_patches_list: List[int]):
+    @staticmethod
+    def _get_qwen_model_class(checkpoint_path: str):
+        checkpoint_name = checkpoint_path.lower()
+        if "qwen3" in checkpoint_name:
+            if Qwen3VLForConditionalGeneration is not None:
+                return Qwen3VLForConditionalGeneration
+            if AutoModelForMultimodalLM is None:
+                raise ImportError(
+                    "Qwen3VLForConditionalGeneration and AutoModelForMultimodalLM are unavailable. "
+                    "Install a transformers version with Qwen3-VL support."
+                )
+            return AutoModelForMultimodalLM
+        if Qwen2_5_VLForConditionalGeneration is None:
+            raise ImportError(
+                "Qwen2_5_VLForConditionalGeneration is unavailable. "
+                "Install qwen-vl compatible transformers or use a Qwen3-VL checkpoint."
+            )
+        return Qwen2_5_VLForConditionalGeneration
+    
+    def forward(self, pixel_values: Union[torch.Tensor, List[str]], questions: List[str], num_patches_list: Optional[List[int]] = None):
         if not self.model:
             raise RuntimeError("Backbone model has not been initialized. Call initialize() on the agent first.")
+        if self.model_type == "qwen":
+            return self._forward_qwen(pixel_values, questions)
         
         model_dtype = next(self.model.parameters()).dtype
 
@@ -115,7 +158,7 @@ class RecogDriveBackbone(nn.Module):
             queries.append(query)
         self.tokenizer.padding_side = 'left'
         model_inputs = self.tokenizer(queries, return_tensors='pt', padding='max_length', max_length=2800)
-        device = torch.device('cuda')
+        device = torch.device(self.device)
         input_ids = model_inputs['input_ids'].to(device)
         attention_mask = model_inputs['attention_mask'].to(device)
 
@@ -136,4 +179,49 @@ class RecogDriveBackbone(nn.Module):
                 return_dict=True,
         )
 
+    def _forward_qwen(self, image_paths: Union[torch.Tensor, List[str]], questions: List[str]):
+        if process_vision_info is None:
+            raise ImportError("qwen_vl_utils is required for Qwen-VL preprocessing.")
+        if not isinstance(image_paths, list):
+            raise TypeError("Qwen-VL backbone expects image_paths as a list of file paths.")
+
+        messages_batch = []
+        for image_path, question in zip(image_paths, questions):
+            messages_batch.append([
+                {"role": "system", "content": system_message},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image_path},
+                        {"type": "text", "text": question.replace("<image>\n", "").replace("<image>", "")},
+                    ],
+                },
+            ])
+
+        texts = [
+            self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            for messages in messages_batch
+        ]
+        image_inputs = []
+        video_inputs = []
+        for messages in messages_batch:
+            image_input, video_input = process_vision_info(messages)
+            image_inputs.extend(image_input or [])
+            video_inputs.extend(video_input or [])
+
+        model_inputs = self.tokenizer(
+            text=texts,
+            images=image_inputs,
+            videos=video_inputs or None,
+            padding=True,
+            return_tensors="pt",
+        ).to(self.device)
+
+        return self.model(
+            **model_inputs,
+            output_hidden_states=True,
+            return_dict=True,
+        )
     

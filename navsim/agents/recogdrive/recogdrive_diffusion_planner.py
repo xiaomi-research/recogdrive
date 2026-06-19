@@ -49,6 +49,12 @@ from .blocks.encoder import (
     SwiGLUFFN,
 )
 from .recogdrive_dit import LightningDiT
+from .trajectory_utils import delta_to_waypoint, validate_training_target
+
+WAYPOINT_NORM_MIN = [-1.57, -19.68, -1.67]
+WAYPOINT_NORM_MAX = [65.17, 22.32, 1.86]
+DELTA_NORM_MIN = [-1.62, -9.38, -1.02]
+DELTA_NORM_MAX = [29.72, 9.98, 0.86]
 
 @dataclass
 class FlowConfig:
@@ -84,6 +90,8 @@ class GRPOConfig:
     clip_advantage_lower_quantile: float = 0.0
     clip_advantage_upper_quantile: float = 1.0
     gamma_denoising: float = 0.6
+    flow_noise_level: float = 0.7
+    flow_sde_type: Literal['sde', 'cps'] = 'sde'
     
     metric_cache_path: str = "/path/to/metric_cache_train"
     reference_policy_checkpoint: str = "/path/to/IL_Model.ckpt"
@@ -110,6 +118,9 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     model_dtype: str = "float16"
     grpo: bool = False
     vlm_size: str = 'large'
+    vlm_hidden_size: Optional[int] = None
+    training_target: Literal['waypoint', 'delta'] = 'waypoint'
+    delta_interval_length: float = 0.5
     
     tune_projector: bool = True
     tune_diffusion_model: bool = True
@@ -126,6 +137,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
     def __init__(self, config: ReCogDriveDiffusionPlannerConfig):
         super().__init__()
         self.config = config
+        validate_training_target(config.training_target)
         
         self.model = LightningDiT(**config.diffusion_model_cfg)
 
@@ -154,10 +166,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             action_dim=config.action_dim,
             hidden_size=config.input_embedding_dim,
         )
-        if config.vlm_size == "large":
-            self.feature_encoder = nn.Linear(3584, config.input_embedding_dim)
-        else:
-            self.feature_encoder = nn.Linear(1536, config.input_embedding_dim)
+        feature_dim = config.vlm_hidden_size
+        if feature_dim is None:
+            feature_dim = 3584 if config.vlm_size == "large" else 1536
+        self.feature_encoder = nn.Linear(feature_dim, config.input_embedding_dim)
             
         self.fusion_projector = nn.Linear(config.input_embedding_dim * 3, config.input_embedding_dim)
 
@@ -270,6 +282,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.clip_advantage_lower_quantile = cfg.clip_advantage_lower_quantile
         self.clip_advantage_upper_quantile = cfg.clip_advantage_upper_quantile
         self.gamma_denoising = cfg.gamma_denoising
+        self.flow_noise_level = cfg.flow_noise_level
+        self.flow_sde_type = cfg.flow_sde_type
         
         self.metric_cache_loader = MetricCacheLoader(Path(cfg.metric_cache_path))
         proposal_sampling = TrajectorySampling(time_horizon=4, interval_length=0.1)
@@ -443,6 +457,93 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         return model_mean, model_log_variance, x_recon
 
+    def _predict_flow(
+        self,
+        actions: torch.Tensor,
+        t_batch: torch.Tensor,
+        vl_features: torch.Tensor,
+        his_traj_features: torch.Tensor,
+        ego_status_features: torch.Tensor,
+    ) -> torch.Tensor:
+        action_features = self.action_encoder(actions, t_batch)
+        if hasattr(self, 'position_embedding'):
+            pos_ids = torch.arange(action_features.shape[1], device=actions.device)
+            action_features = action_features + self.position_embedding(pos_ids)
+
+        vl_features_mean = vl_features.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
+        fused_input = self.fusion_projector(
+            torch.cat((his_traj_features, vl_features_mean, action_features), dim=2)
+        )
+
+        model_output = self.model(
+            hidden_states=fused_input,
+            encoder_hidden_states=vl_features,
+            conditioning_features=ego_status_features,
+            timesteps=t_batch,
+        )
+        pred = self.action_decoder(model_output)
+        return pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
+
+    def _flow_sde_step_with_logprob(
+        self,
+        sample: torch.Tensor,
+        pred_flow: torch.Tensor,
+        t_cont: torch.Tensor,
+        next_t_cont: torch.Tensor,
+        next_sample: Optional[torch.Tensor] = None,
+        noise_level: Optional[float] = None,
+        sde_type: Optional[str] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Flow-GRPO transition from t to t + dt with log-probability."""
+        noise_level = self.flow_noise_level if noise_level is None else noise_level
+        sde_type = self.flow_sde_type if sde_type is None else sde_type
+
+        sample_f = sample.float()
+        pred_flow_f = pred_flow.float()
+        if next_sample is not None:
+            next_sample = next_sample.float()
+
+        shape = (sample_f.shape[0],) + (1,) * (sample_f.ndim - 1)
+        t = t_cont.float().view(shape)
+        next_t = next_t_cont.float().view(shape)
+        dt = (next_t - t).clamp(min=1e-6)
+
+        if noise_level <= 0:
+            mean = sample_f + pred_flow_f * dt
+            log_prob = torch.zeros(sample_f.shape[0], device=sample_f.device, dtype=sample_f.dtype)
+            return mean.to(sample.dtype), log_prob, mean, torch.zeros_like(dt)
+
+        mean = sample_f + pred_flow_f * dt
+        if sde_type == 'sde':
+            std_dev_t = noise_level * torch.sqrt((1.0 - next_t).clamp(min=0.0))
+            transition_std = (std_dev_t * torch.sqrt(dt)).clamp(min=1e-6)
+
+            if next_sample is None:
+                next_sample = mean + transition_std * torch.randn_like(sample_f)
+
+            log_prob = (
+                -((next_sample.detach() - mean) ** 2) / (2.0 * transition_std.square())
+                - torch.log(transition_std)
+                - 0.5 * math.log(2.0 * math.pi)
+            )
+        elif sde_type == 'cps':
+            std_dev_t = (1.0 - next_t).clamp(min=0.0) * math.sin(noise_level * math.pi / 2.0)
+            transition_std = std_dev_t.clamp(min=1e-6)
+
+            if next_sample is None:
+                next_sample = mean + transition_std * torch.randn_like(sample_f)
+
+            log_prob = (
+                -((next_sample.detach() - mean) ** 2) / (2.0 * transition_std.square())
+                - torch.log(transition_std)
+                - 0.5 * math.log(2.0 * math.pi)
+            )
+        else:
+            raise ValueError(f"Unsupported flow_sde_type: {sde_type!r}")
+
+        log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
+        return next_sample.to(sample.dtype), log_prob, mean, std_dev_t
+
     def forward(self, vl_features: torch.Tensor, action_input: BatchFeature) -> BatchFeature:
         """
         Computes the training loss for a given batch.
@@ -556,20 +657,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             for step in range(self.config.num_inference_steps):
                 idx = int(step / self.config.num_inference_steps * self.config.flow_cfg.num_timestep_buckets)
                 t = torch.full((B,), idx, device=device, dtype=torch.long)
-
-                action_features = self.action_encoder(current_actions, t)
-                if hasattr(self, 'position_embedding'):
-                    action_features += self.position_embedding(torch.arange(self.config.action_horizon, device=device))
-                
-                vl_embeds_mean = vl_embeds.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-                fused_input = self.fusion_projector(
-                    torch.cat((history_embeds, vl_embeds_mean, action_features), dim=2)
-                )
-                
-                model_output = self.model(fused_input, vl_embeds, ego_embeds, t)
-                pred = self.action_decoder(model_output)
-                
-                pred_flow = pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
+                pred_flow = self._predict_flow(current_actions, t, vl_embeds, history_embeds, ego_embeds)
                 current_actions = current_actions + dt * pred_flow
 
         elif self.config.sampling_method == 'ddpm':
@@ -644,7 +732,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         his_traj_features: torch.Tensor,
         ego_status_features: torch.Tensor,
         init_actions: Optional[torch.Tensor] = None,
-        deterministic: bool = False
+        deterministic: bool = False,
+        return_log_probs: bool = False,
     ):
         """
         Generates the full denoising chain and the final trajectory.
@@ -680,27 +769,30 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             (B, self.config.action_horizon, D), device=device, dtype=dtype
         )
         denoising_chain = [current_actions.clone()]
+        log_probs = []
 
         if self.config.sampling_method == 'flow':
             dt = 1.0 / self.config.num_inference_steps
             for step in range(self.config.num_inference_steps):
                 idx = int(step / self.config.num_inference_steps * self.config.flow_cfg.num_timestep_buckets)
                 t_batch = torch.full((B,), idx, device=device, dtype=torch.long)
-                
-                action_features = self.action_encoder(current_actions, t_batch)
-                if hasattr(self, 'position_embedding'):
-                    action_features += self.position_embedding(torch.arange(self.config.action_horizon, device=device))
-                
-                vl_features_mean = vl_features.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-                fused_input = self.fusion_projector(
-                    torch.cat((his_traj_features, vl_features_mean, action_features), dim=2)
+                pred_flow = self._predict_flow(
+                    current_actions, t_batch, vl_features, his_traj_features, ego_status_features
                 )
-                
-                model_output = self.model(fused_input, vl_features, ego_status_features, t_batch)
-                pred = self.action_decoder(model_output)
-                
-                pred_flow = pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
-                current_actions = current_actions + dt * pred_flow
+
+                if deterministic:
+                    current_actions = current_actions + dt * pred_flow
+                    log_prob = torch.zeros(B, device=device, dtype=torch.float32)
+                else:
+                    t_cont = torch.full((B,), step / self.config.num_inference_steps, device=device, dtype=torch.float32)
+                    next_t_cont = torch.full((B,), (step + 1) / self.config.num_inference_steps, device=device, dtype=torch.float32)
+                    current_actions, log_prob, _, _ = self._flow_sde_step_with_logprob(
+                        current_actions,
+                        pred_flow,
+                        t_cont,
+                        next_t_cont,
+                    )
+                log_probs.append(log_prob)
                 denoising_chain.append(current_actions.clone())
 
         elif self.config.sampling_method in ['ddpm', 'ddim']:
@@ -748,7 +840,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         final_actions = self.denorm_odo(current_actions)
         chain_tensor = torch.stack(denoising_chain, dim=1)
-        
+
+        if return_log_probs:
+            log_prob_tensor = torch.stack(log_probs, dim=1) if log_probs else None
+            log_prob_tensor = log_prob_tensor.detach() if log_prob_tensor is not None else None
+            return chain_tensor.detach(), final_actions.detach(), log_prob_tensor
         return chain_tensor.detach(), final_actions.detach()
 
     def get_logprobs(
@@ -785,6 +881,34 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 1, num_denoising_steps, *(1,) * (value.ndim - 1)
             ).flatten(0, 1)
 
+        x_t = chains[:, :-1].reshape(-1, H, D)
+        x_t_minus_1 = chains[:, 1:].reshape(-1, H, D)
+
+        if self.config.sampling_method == 'flow':
+            t_single = torch.arange(num_denoising_steps, device=chains.device, dtype=torch.float32)
+            t_single = t_single / num_denoising_steps
+            next_t_single = torch.arange(1, num_denoising_steps + 1, device=chains.device, dtype=torch.float32)
+            next_t_single = next_t_single / num_denoising_steps
+            t_cont = t_single.repeat(B)
+            next_t_cont = next_t_single.repeat(B)
+            t_batch = (t_cont * self.config.flow_cfg.num_timestep_buckets).long()
+
+            pred_flow = self._predict_flow(
+                x_t,
+                t_batch,
+                batched_conditioning['vl_features'],
+                batched_conditioning['his_traj_features'],
+                batched_conditioning['ego_status_features'],
+            )
+            _, log_prob, _, _ = self._flow_sde_step_with_logprob(
+                x_t,
+                pred_flow,
+                t_cont,
+                next_t_cont,
+                next_sample=x_t_minus_1,
+            )
+            return log_prob.view(B, num_denoising_steps)
+
         if self.config.sampling_method == 'ddim':
             t_single = self.ddim_t[-num_denoising_steps:]
             indices_single = torch.arange(
@@ -798,9 +922,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             indices_batch = None 
             
         t_batch = t_single.repeat(B)
-
-        x_t = chains[:, :-1].reshape(-1, H, D)
-        x_t_minus_1 = chains[:, 1:].reshape(-1, H, D)
 
         mean, logvar, _ = self.p_mean_variance(
             x_t, t_batch, indices_batch,
@@ -835,9 +956,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         his_traj_rep = action_input.his_traj.repeat_interleave(G, 0)
         status_feature_rep = action_input.status_feature.repeat_interleave(G, 0)
 
-        chains, trajs = self.sample_chain(
-            vl_features_rep, his_traj_rep, status_feature_rep, deterministic=False
-        )
+        with torch.no_grad():
+            chains, trajs = self.sample_chain(
+                vl_features_rep, his_traj_rep, status_feature_rep, deterministic=False
+            )
 
         tokens_rep = [tok for tok in tokens_list for _ in range(G)]
         unique_tokens = set(tokens_list)
@@ -867,9 +989,12 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         adv_weighted_flat = (adv_steps * discount).reshape(-1)             
 
         log_probs = self.get_logprobs(vl_features_rep, his_traj_rep, status_feature_rep, chains, deterministic=False)
-        log_probs = log_probs.clamp(min=-5, max=2).mean(dim=[1, 2])
-        
-        policy_loss = -torch.mean(log_probs * adv_weighted_flat)
+        if self.config.sampling_method == 'flow':
+            log_probs = log_probs.clamp(min=-5, max=2).reshape(-1)
+            policy_loss = -torch.mean(log_probs * adv_weighted_flat)
+        else:
+            log_probs = log_probs.clamp(min=-5, max=2).mean(dim=[1, 2])
+            policy_loss = -torch.mean(log_probs * adv_weighted_flat)
         total_loss = policy_loss
 
         bc_loss = 0.0
@@ -880,26 +1005,44 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 )
             bc_logp = self.get_logprobs(vl_features, action_input.his_traj, action_input.status_feature, teacher_chains, deterministic=False)
             bc_logp = bc_logp.clamp(min=-5, max=2)
-            K_steps = chains.shape[1] - 1
-            bc_logp = bc_logp.view(-1, K_steps, chains.shape[2], chains.shape[3]).mean(dim=[1,2,3])
+            if self.config.sampling_method == 'flow':
+                bc_logp = bc_logp.mean(dim=1)
+            else:
+                K_steps = chains.shape[1] - 1
+                bc_logp = bc_logp.view(-1, K_steps, chains.shape[2], chains.shape[3]).mean(dim=[1,2,3])
             bc_loss = -bc_logp.mean()
             total_loss = total_loss + bc_coeff * bc_loss
 
         return BatchFeature(data={"loss": total_loss, "reward": rewards.mean(), "policy_loss": policy_loss, "bc_loss": bc_loss})
 
     def norm_odo(self, trajectory: torch.Tensor) -> torch.Tensor:
-        """Normalizes trajectory coordinates and heading to the range [-1, 1]."""
-        x = 2 * (trajectory[..., 0:1] + 1.57) / 66.74 - 1
-        y = 2 * (trajectory[..., 1:2] + 19.68) / 42 - 1
-        heading = 2 * (trajectory[..., 2:3] + 1.67) / 3.53 - 1
-        return torch.cat([x, y, heading], dim=-1)
+        """Normalizes waypoint or delta actions to the range [-1, 1]."""
+        action_min, action_max = self._action_norm_bounds(trajectory.device, trajectory.dtype)
+        return 2 * (trajectory - action_min) / (action_max - action_min) - 1
     
     def denorm_odo(self, normalized_trajectory: torch.Tensor) -> torch.Tensor:
-        """Denormalizes trajectory from [-1, 1] back to original coordinate space."""
-        x = (normalized_trajectory[..., 0:1] + 1) / 2 * 66.74 - 1.57
-        y = (normalized_trajectory[..., 1:2] + 1) / 2 * 42 - 19.68
-        heading = (normalized_trajectory[..., 2:3] + 1) / 2 * 3.53 - 1.67
-        return torch.cat([x, y, heading], dim=-1)
+        """Denormalizes sampled actions and returns waypoint trajectories."""
+        action_min, action_max = self._action_norm_bounds(
+            normalized_trajectory.device, normalized_trajectory.dtype
+        )
+        actions = (normalized_trajectory + 1) / 2 * (action_max - action_min) + action_min
+        if self.config.training_target == "delta":
+            return delta_to_waypoint(actions, self.config.delta_interval_length)
+        return actions
+
+    def _action_norm_bounds(self, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.config.training_target == "waypoint":
+            action_min = WAYPOINT_NORM_MIN
+            action_max = WAYPOINT_NORM_MAX
+        else:
+            action_min = DELTA_NORM_MIN
+            action_max = DELTA_NORM_MAX
+
+        action_min_tensor = torch.tensor(action_min, device=device, dtype=dtype).view(1, 1, -1)
+        action_max_tensor = torch.tensor(action_max, device=device, dtype=dtype).view(1, 1, -1)
+        if torch.any(action_max_tensor <= action_min_tensor):
+            raise ValueError("All action norm max values must be greater than min values.")
+        return action_min_tensor, action_max_tensor
 
     def reward_fn(
         self,

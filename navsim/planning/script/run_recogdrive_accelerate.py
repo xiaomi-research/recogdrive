@@ -32,7 +32,7 @@ import shutil
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
-from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
+from navsim.planning.training.dataset import CacheOnlyDataset, Dataset, WaymoE2ECacheOnlyDataset
 
 from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
 
@@ -338,12 +338,18 @@ class ReCogDriveTrainer:
                 "force_cache_computation must be False when using cached data"
             assert self.cfg.cache_path is not None, \
                 "cache_path must be provided when using cached data"
-            self.train_dataset = CacheOnlyDataset(
-                cache_path=self.cfg.cache_path,
-                feature_builders=agent.get_feature_builders(),
-                target_builders=agent.get_target_builders(),
-                log_names=self.cfg.train_logs,
-            )
+            if getattr(self.cfg, "waymoe2e", False):
+                self.train_dataset = WaymoE2ECacheOnlyDataset(
+                    cache_path=self.cfg.cache_path,
+                    split=getattr(self.cfg, "waymoe2e_train_split", "training"),
+                )
+            else:
+                self.train_dataset = CacheOnlyDataset(
+                    cache_path=self.cfg.cache_path,
+                    feature_builders=agent.get_feature_builders(),
+                    target_builders=agent.get_target_builders(),
+                    log_names=self.cfg.train_logs,
+                )
         else:
             logger.info("Building SceneLoader for training")
             train_data, _ = build_datasets(self.cfg, agent)
@@ -367,12 +373,18 @@ class ReCogDriveTrainer:
                 "force_cache_computation must be False when using cached data"
             assert self.cfg.cache_path is not None, \
                 "cache_path must be provided when using cached data"
-            self.val_dataset = CacheOnlyDataset(
-                cache_path=self.cfg.cache_path,
-                feature_builders=agent.get_feature_builders(),
-                target_builders=agent.get_target_builders(),
-                log_names=self.cfg.val_logs,
-            )
+            if getattr(self.cfg, "waymoe2e", False):
+                self.val_dataset = WaymoE2ECacheOnlyDataset(
+                    cache_path=self.cfg.cache_path,
+                    split=getattr(self.cfg, "waymoe2e_val_split", "val"),
+                )
+            else:
+                self.val_dataset = CacheOnlyDataset(
+                    cache_path=self.cfg.cache_path,
+                    feature_builders=agent.get_feature_builders(),
+                    target_builders=agent.get_target_builders(),
+                    log_names=self.cfg.val_logs,
+                )
         else:
             logger.info("Building SceneLoader for validation")
             _, val_data = build_datasets(self.cfg, agent)
@@ -748,8 +760,7 @@ class ReCogDriveTrainer:
             else:
                 preds = self.agent.forward(features, targets, tokens_list)
 
-            pred_traj = preds["pred_traj"]
-            loss = F.l1_loss(pred_traj, targets["trajectory"])
+            loss = self.agent.compute_loss(features, targets, preds)
 
             loss_det = accel.reduce(loss.detach(), reduction="mean")
             total_loss += loss_det.item()
