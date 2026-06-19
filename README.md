@@ -21,6 +21,7 @@ International Conference on Learning Representation (ICLR), 2026
 </div>
 
 ## News
+* **` Apr. 2nd, 2026`:** Please also follow our latest work [UniDriveVLA](https://github.com/xiaomi-research/unidrivevla), where we continue exploring Vision-Language-Action (VLA) models for autonomous driving. UniDriveVLA extends our research direction toward unified driving understanding, reasoning, and action generation. Stay tuned for more updates!
 * **` Jan. 26th, 2025`:** Our paper has been accepted at ICLR 2026. 🎉
 * **` Sept. 30th, 2025`:** We have updated our latest paper with more model details, experiments, and comprehensive visualizations. Meanwhile, we fixed the unintended NumPy issue 🐛 that previously caused inconsistencies in the training metric cache. Now the code ensures reproducible and consistent results. Special thanks to the discussion in [issue #10](https://github.com/riron1206) for bringing this up!
 * **` Aug. 24th, 2025`:** We have released all driving pretraining QA, including 12 driving datasets and our own annotated NavSim data. We have rewritten the scoring, filtering, and evaluation for open-source data. If it’s helpful to you, feel free to star and cite our work! 🚗💨
