@@ -79,7 +79,7 @@ CACHE_ROOT="${CACHE_ROOT:-/path/to/recogdrive_agent_cache}"
 if [[ "${WAYMOE2E,,}" == "true" ]]; then
   CACHE_PATH="${CACHE_PATH:-${WAYMOE2E_CACHE_PATH:-/path/to/waymoe2e_recogdrive_cache}}"
 else
-  CACHE_PATH="${CACHE_PATH:-${CACHE_ROOT}_${MODEL_FAMILY}_${TRAINING_TARGET}}"
+  CACHE_PATH="${CACHE_PATH:-${CACHE_ROOT}_${MODEL_FAMILY}}"
 fi
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-training_recogdrive_${MODEL_FAMILY}_${TRAINING_TARGET}_${TRAIN_STAGE}}"
 LOG_FILE="${LOG_FILE:-train_recogdrive_${MODEL_FAMILY}_${TRAINING_TARGET}_${TRAIN_STAGE}.txt}"

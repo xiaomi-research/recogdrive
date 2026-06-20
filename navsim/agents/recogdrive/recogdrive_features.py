@@ -131,6 +131,17 @@ class TrajectoryTargetBuilder(AbstractTargetBuilder):
     def compute_targets(self, scene: Scene) -> Dict[str, torch.Tensor]:
         future_trajectory = scene.get_future_trajectory(num_trajectory_frames=self._trajectory_sampling.num_poses)
         trajectory = torch.tensor(future_trajectory.poses, dtype=torch.float32)
-        if self.training_target == "delta":
-            trajectory = waypoint_to_delta(trajectory, self._trajectory_sampling.interval_length)
         return {"trajectory": trajectory}
+
+    def transform_cached_targets(self, targets: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Converts waypoint cache targets to the configured training target."""
+        if "trajectory" not in targets:
+            return targets
+
+        targets = dict(targets)
+        if self.training_target == "delta":
+            targets["trajectory"] = waypoint_to_delta(
+                targets["trajectory"],
+                self._trajectory_sampling.interval_length,
+            )
+        return targets

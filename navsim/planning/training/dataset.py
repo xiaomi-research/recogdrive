@@ -33,6 +33,19 @@ def dump_feature_target_to_pickle(path: Path, data_dict: Dict[str, torch.Tensor]
         pickle.dump(data_dict, f)
 
 
+def transform_targets_after_load(
+    targets: Dict[str, torch.Tensor],
+    target_builders: Optional[List[AbstractTargetBuilder]],
+) -> Dict[str, torch.Tensor]:
+    """Applies optional target transforms after loading waypoint targets from cache."""
+    transformed_targets = targets
+    for builder in target_builders or []:
+        transform_fn = getattr(builder, "transform_cached_targets", None)
+        if callable(transform_fn):
+            transformed_targets = transform_fn(transformed_targets)
+    return transformed_targets
+
+
 class CacheOnlyDataset(torch.utils.data.Dataset):
     """Dataset wrapper for feature/target datasets from cache only."""
 
@@ -133,6 +146,7 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             data_dict = load_feature_target_from_pickle(data_dict_path)
             targets.update(data_dict)
+        targets = transform_targets_after_load(targets, self._target_builders)
 
         return (features, targets, token)
 
@@ -140,7 +154,12 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
 class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
     """Dataset wrapper for RAP-style Waymo E2E feature/target caches."""
 
-    def __init__(self, cache_path: str, split: str):
+    def __init__(
+        self,
+        cache_path: str,
+        split: str,
+        target_builders: Optional[List[AbstractTargetBuilder]] = None,
+    ):
         """
         Initializes the Waymo E2E cached dataset.
         :param cache_path: root cache folder with split subfolders.
@@ -150,6 +169,7 @@ class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
         split_path = Path(cache_path) / split
         assert split_path.is_dir(), f"Waymo E2E cache split path {split_path} does not exist!"
         self._cache_path = split_path
+        self._target_builders = target_builders
         self.tokens = sorted(
             token_path
             for token_path in self._cache_path.iterdir()
@@ -174,6 +194,7 @@ class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
 
         features = load_feature_target_from_pickle(token_path / "features.gz")
         targets = load_feature_target_from_pickle(token_path / "targets.gz")
+        targets = transform_targets_after_load(targets, self._target_builders)
 
         return features, targets, token_path.name
 
@@ -285,6 +306,7 @@ class Dataset(torch.utils.data.Dataset):
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             data_dict = load_feature_target_from_pickle(data_dict_path)
             targets.update(data_dict)
+        targets = transform_targets_after_load(targets, self._target_builders)
 
         return (features, targets)
 
@@ -341,6 +363,7 @@ class Dataset(torch.utils.data.Dataset):
                 features.update(builder.compute_features(agent_input))
             for builder in self._target_builders:
                 targets.update(builder.compute_targets(scene))
+            targets = transform_targets_after_load(targets, self._target_builders)
 
         return (features, targets)
 

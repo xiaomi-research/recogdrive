@@ -342,6 +342,7 @@ class ReCogDriveTrainer:
                 self.train_dataset = WaymoE2ECacheOnlyDataset(
                     cache_path=self.cfg.cache_path,
                     split=getattr(self.cfg, "waymoe2e_train_split", "training"),
+                    target_builders=agent.get_target_builders(),
                 )
             else:
                 self.train_dataset = CacheOnlyDataset(
@@ -377,6 +378,7 @@ class ReCogDriveTrainer:
                 self.val_dataset = WaymoE2ECacheOnlyDataset(
                     cache_path=self.cfg.cache_path,
                     split=getattr(self.cfg, "waymoe2e_val_split", "val"),
+                    target_builders=agent.get_target_builders(),
                 )
             else:
                 self.val_dataset = CacheOnlyDataset(
