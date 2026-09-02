@@ -193,7 +193,15 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def _init_ddpm_sampler(self, cfg: DDPMConfig):
         """Initializes buffers required for DDPM, using original naming."""
-        ddpm_betas = self.cosine_beta_schedule(cfg.num_train_timesteps)
+        if cfg.num_train_timesteps < 1:
+            raise ValueError("num_train_timesteps must be positive")
+
+        # Keep the schedule length on the planner itself.  The DDIM
+        # initializer calls this method too, and training uses this value when
+        # drawing discrete timesteps, so both samplers must share one source of
+        # truth for the number of diffusion steps.
+        self.ddpm_num_train_timesteps = cfg.num_train_timesteps
+        ddpm_betas = self.cosine_beta_schedule(self.ddpm_num_train_timesteps)
         self.register_buffer('ddpm_betas', ddpm_betas)
 
         ddpm_alphas = 1.0 - ddpm_betas
@@ -229,7 +237,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.ft_denoising_steps = ddim_steps
         ddim_eta = cfg.ddim_eta 
 
-        self.ddpm_num_train_timesteps = cfg.num_train_timesteps
         step_ratio = self.ddpm_num_train_timesteps // ddim_steps
         ddim_t = torch.arange(0, ddim_steps) * step_ratio
         self.register_buffer('ddim_t_schedule', ddim_t.long()) # Die originalen Zeitpunkte
@@ -365,6 +372,29 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             return torch.randint(0, self.ddpm_num_train_timesteps, (batch_size,), device=device).long()
         else:
             raise ValueError(f"Unsupported sampling method: {self.config.sampling_method}")
+
+    def _ddpm_timesteps(self) -> list[int]:
+        """Return the reverse DDPM schedule used by all denoising paths.
+
+        Keeping schedule construction in one place is important for GRPO:
+        ``sample_chain`` records transitions at these timesteps and
+        ``get_logprobs`` must evaluate the same transitions.  Previously the
+        latter reconstructed a short ``0..K`` range, which silently assigned
+        probabilities to the wrong noise levels.
+        """
+        num_inference_steps = self.config.num_inference_steps
+        if num_inference_steps < 1:
+            raise ValueError("num_inference_steps must be positive")
+
+        step_size = self.ddpm_num_train_timesteps // num_inference_steps
+        if step_size < 1:
+            raise ValueError(
+                "num_inference_steps cannot exceed num_train_timesteps for DDPM"
+            )
+
+        return list(
+            reversed(range(0, self.ddpm_num_train_timesteps, step_size))
+        )
 
 
     def p_mean_variance(
@@ -573,8 +603,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 current_actions = current_actions + dt * pred_flow
 
         elif self.config.sampling_method == 'ddpm':
-            step_size = self.config.ddpm_cfg.num_train_timesteps // self.config.num_inference_steps
-            timesteps_to_iterate = list(reversed(range(0, self.config.ddpm_cfg.num_train_timesteps, step_size)))
+            timesteps_to_iterate = self._ddpm_timesteps()
             
             for i, t_int in enumerate(timesteps_to_iterate):
                 t_batch = self.make_timesteps(B, t_int, device)
@@ -705,8 +734,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         elif self.config.sampling_method in ['ddpm', 'ddim']:
             if self.config.sampling_method == 'ddpm':
-                step_size = self.config.ddpm_cfg.num_train_timesteps // self.config.num_inference_steps
-                timesteps = list(reversed(range(0, self.config.ddpm_cfg.num_train_timesteps, step_size)))
+                timesteps = self._ddpm_timesteps()
             else: 
                 timesteps = self.ddim_t
             
@@ -793,6 +821,20 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 device=chains.device
             )
             indices_batch = indices_single.repeat(B)
+        elif self.config.sampling_method == 'ddpm':
+            timesteps = self._ddpm_timesteps()
+            if num_denoising_steps > len(timesteps):
+                raise ValueError(
+                    "chains contains more DDPM transitions than the configured schedule"
+                )
+            # ``sample_chain`` starts at the noisiest state and follows the
+            # schedule in reverse, so use its leading transitions here.
+            t_single = torch.tensor(
+                timesteps[:num_denoising_steps],
+                device=chains.device,
+                dtype=torch.long,
+            )
+            indices_batch = None
         else:
             t_single = torch.arange(start=K1 - 2, end=-1, step=-1, device=chains.device)
             indices_batch = None 
