@@ -249,15 +249,25 @@ def main(cfg: DictConfig) -> None:
 
         num_sucessful_scenarios = pdm_score_df["valid"].sum()
         num_failed_scenarios = len(pdm_score_df) - num_sucessful_scenarios
+
+        save_path = Path(cfg.output_dir)
+        timestamp = datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
+        csv_path = save_path / f"{timestamp}.csv"
+
+        if num_sucessful_scenarios == 0:
+            pdm_score_df.to_csv(csv_path)
+            logger.error(
+                f"All {len(pdm_score_df)} scenarios failed; no averages computed. Rows: {csv_path}"
+            )
+            return
+
         average_row = pdm_score_df.drop(columns=["token", "valid",'rank']).mean(skipna=True)
         average_row["token"] = "average"
         average_row["valid"] = pdm_score_df["valid"].all()
         average_row["rank"] = "0"
         pdm_score_df.loc[len(pdm_score_df)] = average_row
 
-        save_path = Path(cfg.output_dir)
-        timestamp = datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
-        pdm_score_df.to_csv(save_path / f"{timestamp}.csv")
+        pdm_score_df.to_csv(csv_path)
 
         logger.info(
             f"""
@@ -265,7 +275,7 @@ def main(cfg: DictConfig) -> None:
                 Number of successful scenarios: {num_sucessful_scenarios}.
                 Number of failed scenarios: {num_failed_scenarios}.
                 Final average score of valid results: {pdm_score_df['score'].mean()}.
-                Results are stored in: {save_path / f"{timestamp}.csv"}.
+                Results are stored in: {csv_path}.
             """
         )
 

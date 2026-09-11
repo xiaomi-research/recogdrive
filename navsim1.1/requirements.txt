@@ -23,6 +23,7 @@ pyarrow # For parquet
 pyinstrument    # Used widely as profiler
 pyogrio # A performant backend for geopandas
 pyquaternion>=0.9.5  # Used widely, avoid known bug with quaternion slerp
+pytest  # nuplan/database/utils/pointclouds/lidar.py:7 imports it at runtime
 rasterio  # Used in GpkgMapsDB.py
 ray # Used widely
 retry
@@ -36,15 +37,15 @@ sympy  # Use for symbolic algebra
 tornado  # Used in nuboard.py
 tqdm  # Used widely
 ujson  # Used in serialiation_callback.py
-diffusers
-transformers
+diffusers==0.35.2
+transformers==4.57.1
 accelerate
 deepspeed
 decord
 qwen-vl-utils
 
-torch
-torchvision
+torch==2.9.1
+torchvision==0.24.1
 pytorch-lightning
 tensorboard==2.16.2
 protobuf==4.25.3

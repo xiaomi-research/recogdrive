@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import lzma
 import pickle
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from tqdm import tqdm
 
@@ -128,6 +131,10 @@ class SceneLoader:
         """
         if original_sensor_path is None:
             original_sensor_path = sensor_blobs_path
+        if original_sensor_path is None and any(
+            sensor_config.get_sensors_at_iteration(i) for i in range(4)
+        ):
+            raise TypeError("SceneLoader needs original_sensor_path or sensor_blobs_path when sensors are requested")
         if scene_filter is None:
             raise TypeError("SceneLoader needs scene_filter")
 
@@ -176,6 +183,7 @@ class SceneLoader:
         """
         reactive_synthetic_initial_tokens = self._scene_filter.reactive_synthetic_initial_tokens
         if reactive_synthetic_initial_tokens is None:
+            logger.warning("reactive_synthetic_initial_tokens is unset; stage-two reactive set is empty")
             return []
         return list(set(self.synthetic_scenes_tokens) & set(reactive_synthetic_initial_tokens))
 
@@ -187,6 +195,7 @@ class SceneLoader:
         """
         non_reactive_synthetic_initial_tokens = self._scene_filter.non_reactive_synthetic_initial_tokens
         if non_reactive_synthetic_initial_tokens is None:
+            logger.warning("non_reactive_synthetic_initial_tokens is unset; stage-two non-reactive set is empty")
             return []
         return list(set(self.synthetic_scenes_tokens) & set(non_reactive_synthetic_initial_tokens))
 
@@ -355,6 +364,11 @@ class MetricCacheLoader:
         if hit is None:
             with lzma.open(self.metric_cache_paths[token], "rb") as f:
                 hit = pickle.load(f)
+            if not hasattr(hit, "scene_type"):
+                raise TypeError(
+                    f"Metric cache for {token} is not NAVSIM 2.0 format (missing scene_type). "
+                    "Rebuild it with navsim2.0 metric caching; a 1.1 cache is not usable."
+                )
             if len(self._lru) >= self._lru_max:
                 self._lru.popitem(last=False)
         self._lru[token] = hit

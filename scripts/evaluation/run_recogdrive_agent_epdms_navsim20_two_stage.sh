@@ -7,13 +7,13 @@ export NAVSIM_TREE=2.0
 export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}/navsim2.0}"
 export PYTHONPATH="${NAVSIM_DEVKIT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
-# One-stage navtest EPDMS (per-frame + adjacent-frame EC). Not navhard two-stage.
-TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-navtest}"
+# Two-stage navhard EPDMS (synthetic stage-two + endpoint-weighted product).
+TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-navhard_two_stage}"
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache}"
 CHECKPOINT="${CHECKPOINT:-/path/to/recogdrive.ckpt}"
 VLM_PATH="${VLM_PATH:-/path/to/internvl3_pretrain_model}"
 
-python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score_one_stage.py" \
+python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score.py" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   agent=recogdrive_agent \
   agent.checkpoint_path="${CHECKPOINT}" \
@@ -25,5 +25,5 @@ python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score_one_stage.py"
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
-  experiment_name=recogdrive_agent_epdms_navsim20_one_stage \
+  experiment_name=recogdrive_agent_epdms_navsim20_two_stage \
   metric_cache_path="${CACHE_PATH}"

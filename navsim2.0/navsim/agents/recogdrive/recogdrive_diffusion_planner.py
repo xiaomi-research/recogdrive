@@ -240,6 +240,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def _init_ddpm_sampler(self, cfg: DDPMConfig):
         """Initializes buffers required for DDPM, using original naming."""
+        self.ddpm_num_train_timesteps = cfg.num_train_timesteps
         ddpm_betas = self.cosine_beta_schedule(cfg.num_train_timesteps)
         self.register_buffer('ddpm_betas', ddpm_betas)
 
@@ -341,10 +342,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             model_dict = self.state_dict()
             filtered_ckpt = {}
             for k, v in state_dict.items():
-                if k.startswith("agent.action_head."):
-                    k2 = k[len("agent.action_head."):]
+                kk = k[len("agent."):] if k.startswith("agent.") else k
+                if kk.startswith("action_head."):
+                    k2 = kk[len("action_head."):]
                 else:
-                    k2 = k
+                    k2 = kk
                 if k2 in model_dict and v.shape == model_dict[k2].shape:
                     filtered_ckpt[k2] = v
                 else:
@@ -1022,13 +1024,13 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         metric_cache = {token: self.metric_cache_loader.get_from_token(token) for token in unique_tokens}
         rewards = self.reward_fn(trajs, tokens_rep, metric_cache)
 
-        rewards_matrix = rewards.view(B, G)
+        rewards_matrix = rewards.view(B, G).float()
         mean_r = rewards_matrix.mean(dim=1, keepdim=True)
         std_r = rewards_matrix.std(dim=1, keepdim=True) + 1e-8
         advantages = ((rewards_matrix - mean_r) / std_r).view(-1).detach()
         adv_min = torch.quantile(advantages, self.clip_advantage_lower_quantile)
         adv_max = torch.quantile(advantages, self.clip_advantage_upper_quantile)
-        advantages = advantages.clamp(min=adv_min, max=adv_max)
+        advantages = advantages.clamp(min=adv_min, max=adv_max).to(rewards.dtype)
 
         num_denoising_steps = chains.shape[1] - 1
         denoising_indices = torch.arange(num_denoising_steps, device=advantages.device)

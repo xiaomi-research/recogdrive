@@ -66,7 +66,10 @@ case "${TRAIN_STAGE}" in
   rl)
     GRPO="True"
     MAX_EPOCHS="${MAX_EPOCHS:-10}"
-    BATCH_SIZE="${BATCH_SIZE:-16}"
+    if [[ -z "${BATCH_SIZE:-}" ]]; then
+      _RL_BATCH_DEFAULT=1
+      BATCH_SIZE=16
+    fi
     GRPO_NUM_ITERATIONS="${GRPO_NUM_ITERATIONS:-4}"
     CHECKPOINT="${CHECKPOINT:-/path/to/${MODEL_FAMILY}_${TRAINING_TARGET}_il.ckpt}"
     METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-/path/to/metric_cache_train}"
@@ -125,7 +128,12 @@ echo "VLM_PATH=${VLM_PATH}"
 echo "CACHE_PATH=${CACHE_PATH}"
 echo "WAYMOE2E=${WAYMOE2E}"
 echo "NAVSIM_DEVKIT_ROOT=${NAVSIM_DEVKIT_ROOT}"
+if [[ "${_RL_BATCH_DEFAULT:-}" == "1" ]] && (( GPUS < 8 )); then
+  BATCH_SIZE=1
+  echo "RL default BATCH_SIZE=16 is for 8 GPUs; using 1 on GPUS=${GPUS}. Set BATCH_SIZE to override."
+fi
 echo "GPUS=${GPUS}"
+echo "BATCH_SIZE=${BATCH_SIZE}"
 
 SMOKE_ARGS=()
 if [[ "${MAX_STEPS}" != "0" ]]; then

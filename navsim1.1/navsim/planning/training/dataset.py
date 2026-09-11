@@ -115,10 +115,6 @@ def load_valid_cache_paths(
                 continue
             if all(_is_nonzero_file(token_path / f"{name}.gz") for name in builder_names):
                 tokens_rel[token_path.name] = f"{log_path.name}/{token_path.name}"
-    try:
-        index_path.write_text(json.dumps({"builders": builder_names, "tokens": tokens_rel}))
-    except OSError:
-        pass
     return from_rel(tokens_rel)
 
 
