@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+export NAVSIM_TREE="${NAVSIM_TREE:-1.1}"
 export WAYMOE2E="${WAYMOE2E:-True}"
 export MODEL_FAMILY="${MODEL_FAMILY:-internvl3}"
 export TRAINING_TARGET="${TRAINING_TARGET:-waypoint}"

@@ -1,0 +1,9 @@
+_navsim20_upstream/
+__pycache__/
+*.pyc
+
+# local verify / remote harness — never ship
+scripts/benchmark/
+**/tests/
+test_*.py
+check_*.py

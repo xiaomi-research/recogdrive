@@ -17,7 +17,7 @@ export MASTER_PORT=${MASTER_PORT}
 export PORT=${PORT}
 
 echo "GPUS: ${GPUS}"
-export CUDA_LAUNCH_BLOCKING=1
+export CUDA_LAUNCH_BLOCKING=0
 
 CHECKPOINT="/path/to/diffusion-planner.ckpt"
 

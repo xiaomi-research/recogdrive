@@ -1,0 +1,32 @@
+_target_: navsim.agents.recogdrive.recogdrive_agent.ReCogDriveAgent
+_convert_: 'all'
+
+trajectory_sampling:
+  _target_: nuplan.planning.simulation.trajectory.trajectory_sampling.TrajectorySampling
+  _convert_: 'all'
+  time_horizon: 4
+  interval_length: 0.5
+checkpoint_path: ''
+vlm_path: ''
+cam_type: 'single'
+vlm_type: 'internvl'
+dit_type: 'small'
+sampling_method: 'ddim'
+cache_mode: False
+cache_hidden_state: False
+metric_cache_path: ''
+reference_policy_checkpoint: ''
+vlm_size: 'small'
+vlm_hidden_size: null
+train_backbone: false
+training_target: 'waypoint'
+flow_noise_level: 0.7
+flow_sde_type: 'sde'
+grpo: False
+grpo_num_iterations: 1
+grpo_clip_eps: 0.2
+grpo_kl_coef: 0.0
+grpo_bc_coeff: 0.1
+grpo_sample_time: 8
+optimizer_type: adamw
+lr: 1e-4

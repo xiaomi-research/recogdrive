@@ -1,0 +1,49 @@
+nuplan-devkit @ git+https://github.com/motional/nuplan-devkit/@nuplan-devkit-v1.2
+scikit-learn==1.2.2
+positional-encodings==6.0.1
+
+# nuplan requirements
+aioboto3
+aiofiles
+bokeh==2.4.3  # Used in the nuBoard dashboard
+casadi  # Used for optimization solving
+control==0.9.1  # Used for LQR controller synthesis
+Fiona  # Used in GpkgMapsDB.py
+geopandas>=0.12.1  # Used to read maps
+guppy3==3.1.2
+hydra-core==1.2.0  # Used for configs
+joblib
+matplotlib  # Used for rendering
+nest_asyncio  # Used to nest event loops when running nuBoard/jupyter
+numpy==1.23.4
+opencv-python==4.9.0.80  # Used widely
+pandas    # Used widely
+Pillow    # Used widely to render images
+psutil  # Used widely to get the number of CPUs
+pyarrow # For parquet
+pyinstrument    # Used widely as profiler
+pyogrio # A performant backend for geopandas
+pyquaternion>=0.9.5  # Used widely, avoid known bug with quaternion slerp
+pytest    # Used widely
+rasterio  # Used in GpkgMapsDB.py
+ray # Used widely
+retry
+rtree # Used in occupancy maps
+scipy  # Used widely
+selenium # Used in bokeh export png
+setuptools==65.5.1  # Used in setup.py, pinned to not break pytorch
+Shapely>=2.0.0  # Used widely
+SQLAlchemy==1.4.27  # older versions don't work with some table definitions
+sympy  # Use for symbolic algebra
+tornado  # Used in nuboard.py
+tqdm  # Used widely
+ujson  # Used in serialiation_callback.py
+
+torch==2.0.1
+torchvision==0.15.2
+pytorch-lightning==2.2.1
+tensorboard==2.16.2
+protobuf==4.25.3
+
+notebook
+timm

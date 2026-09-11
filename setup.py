@@ -2,29 +2,20 @@ import os
 
 import setuptools
 
-# Change directory to allow installation from anywhere
+# One repo, two trees. Default install is 1.1. For 2.0: pip install -e navsim2.0
 script_folder = os.path.dirname(os.path.realpath(__file__))
 os.chdir(script_folder)
 
 with open("requirements.txt") as f:
     requirements = f.read().splitlines()
 
-# Installs
 setuptools.setup(
     name="navsim",
     version="1.1.0",
-    author="University of Tuebingen",
-    author_email="kashyap.chitta@uni-tuebingen.de",
-    description="NAVSIM: Data-Driven Non-Reactive Autonomous Vehicle Simulation and Benchmarking",
-    url="https://github.com/autonomousvision/navsim",
+    description="ReCogDrive: NAVSIM 1.1 (default) and 2.0 live in navsim1.1/ and navsim2.0/",
     python_requires=">=3.9",
-    packages=setuptools.find_packages(script_folder),
-    package_dir={"": "."},
-    classifiers=[
-        "Programming Language :: Python :: 3.9",
-        "Operating System :: OS Independent",
-        "License :: Free for non-commercial use",
-    ],
+    packages=setuptools.find_packages("navsim1.1"),
+    package_dir={"": "navsim1.1"},
     license="apache-2.0",
     install_requires=requirements,
 )

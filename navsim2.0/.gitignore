@@ -1,0 +1,29 @@
+# python
+*.pyc
+**/__pycache__/
+.pytest_cache/*
+.pydevproject
+
+# IDE
+.vscode/*
+
+# Pip
+*.egg-info
+
+# files
+*.log
+*.pkl
+*.jpg
+*.pcd
+
+# exp
+exp
+
+# data
+dataset
+
+# lsf
+*.bsub
+
+# running scripts
+scripts_dev/*

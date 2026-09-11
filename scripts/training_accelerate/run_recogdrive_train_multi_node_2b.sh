@@ -19,7 +19,7 @@ export MASTER_PORT=${MASTER_PORT}
 export PORT=${PORT}
 
 echo "GPUS: ${GPUS}"
-export CUDA_LAUNCH_BLOCKING=1
+export CUDA_LAUNCH_BLOCKING=0
 
 
 
@@ -35,13 +35,13 @@ torchrun \
     agent.grpo=False \
     agent.vlm_path='/path/to/pretrain_model' \
     agent.cam_type='single' \
-    agent.cache_hidden_state=True \
+    agent.cache_hidden_state=False \
     agent.vlm_type="internvl" \
     agent.dit_type="small" \
     agent.vlm_size="small" \
     agent.sampling_method="ddim" \
     trainer.params.max_epochs=100 \
-    dataloader.params.batch_size=32 \
+    dataloader.params.batch_size=4 \
     trainer.params.num_nodes=1 \
     trainer.params.devices=8 \
     use_deepspeed=True \
@@ -49,6 +49,6 @@ torchrun \
     deepspeed.fp16.enabled=True \
     experiment_name=training_recogdrive_agent_il \
     train_test_split=$TRAIN_TEST_SPLIT \
-    cache_path="/path/to/recogdrive_agent_cache_dir_train_2b" \
+    cache_path="/path/to/recogdrive_agent_cache_dir_train_2b_no_hidden_state" \
     use_cache_without_dataset=True \
     force_cache_computation=False > train_recogdrive_exp_2b.txt 2>&1
