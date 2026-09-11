@@ -176,6 +176,7 @@ def build_datasets(cfg: DictConfig, agent: AbstractAgent) -> Tuple[Dataset, Data
         synthetic_scenes_path=Path(cfg.synthetic_scenes_path) if getattr(cfg, "synthetic_scenes_path", None) else None,
         sensor_config=agent.get_sensor_config(),
         sensor_blobs_path=sensor_blobs_path,
+        load_image_path=getattr(agent, "load_image_path", False),
     )
 
     val_scene_loader = SceneLoader(
@@ -186,6 +187,7 @@ def build_datasets(cfg: DictConfig, agent: AbstractAgent) -> Tuple[Dataset, Data
         synthetic_scenes_path=Path(cfg.synthetic_scenes_path) if getattr(cfg, "synthetic_scenes_path", None) else None,
         sensor_config=agent.get_sensor_config(),
         sensor_blobs_path=sensor_blobs_path,
+        load_image_path=getattr(agent, "load_image_path", False),
     )
 
     train_data = Dataset(

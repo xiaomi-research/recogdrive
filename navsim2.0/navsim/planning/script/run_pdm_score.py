@@ -68,6 +68,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[p
         synthetic_scenes_path=Path(cfg.synthetic_scenes_path),
         scene_filter=scene_filter,
         sensor_config=agent.get_sensor_config(),
+        load_image_path=getattr(agent, "load_image_path", False),
     )
 
     pdm_results: List[pd.DataFrame] = []

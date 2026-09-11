@@ -52,6 +52,7 @@ def run_test_evaluation(
         original_sensor_path=original_sensor_path,
         synthetic_scenes_path=synthetic_scenes_path,
         sensor_config=agent.get_sensor_config(),
+        load_image_path=getattr(agent, "load_image_path", False),
     )
     agent.initialize()
 

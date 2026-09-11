@@ -100,19 +100,6 @@ def load_valid_cache_paths(
     return from_rel(tokens_rel)
 
 
-def _preload_pixel_values(features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    path_tensor = features.get("image_path_tensor")
-    if path_tensor is None or "pixel_values" in features:
-        return features
-    path = "".join(chr(int(code)) for code in path_tensor.tolist() if int(code))
-    if not path:
-        return features
-    from navsim.agents.recogdrive.utils.internvl_preprocess import load_image
-
-    features["pixel_values"] = load_image(path)
-    return features
-
-
 class CacheOnlyDataset(torch.utils.data.Dataset):
     """Dataset wrapper for feature/target datasets from cache only."""
 
@@ -184,7 +171,6 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
             data_dict = load_feature_target_from_pickle(data_dict_path)
             targets.update(data_dict)
         targets = transform_targets_after_load(targets, self._target_builders)
-        features = _preload_pixel_values(features)
 
         return (features, targets, token)
 

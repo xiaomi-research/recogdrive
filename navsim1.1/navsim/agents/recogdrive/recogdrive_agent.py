@@ -29,6 +29,8 @@ from .muon import Muon
 
 
 class ReCogDriveAgent(AbstractAgent):
+    load_image_path = True
+
     def __init__(
         self,
         trajectory_sampling: TrajectorySampling,
@@ -240,7 +242,7 @@ class ReCogDriveAgent(AbstractAgent):
             questions = self._vlm_questions(features["history_trajectory"], features["high_command_one_hot"])
             if "num_patches" in features:
                 num_patches_list = [int(n) for n in features["num_patches"].tolist()]
-            if "pixel_values" not in features and "image_path_tensor" in features:
+            if "image_path_tensor" in features:
                 path_tensor = features["image_path_tensor"]
                 if path_tensor.ndim == 1:
                     path_tensor = path_tensor.unsqueeze(0)
@@ -279,7 +281,7 @@ class ReCogDriveAgent(AbstractAgent):
                 num_patches_list = [p.shape[0] for p in pixel_values_list]
                 pixel_values_cat = torch.cat(pixel_values_list, dim=0).cuda(non_blocking=True)
 
-            vlm_ctx = torch.inference_mode() if not self.train_backbone else contextlib.nullcontext()
+            vlm_ctx = torch.no_grad() if not self.train_backbone else contextlib.nullcontext()
             with vlm_ctx:
                 outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
             last_hidden_state = outputs.hidden_states[-1]

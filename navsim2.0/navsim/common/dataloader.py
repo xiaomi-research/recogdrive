@@ -125,7 +125,6 @@ class SceneLoader:
     ):
         """
         Official 2.0 constructor. sensor_blobs_path is a 1.1 alias for original_sensor_path.
-        load_image_path is accepted and ignored (2.0 Scene has no such flag).
         """
         if original_sensor_path is None:
             original_sensor_path = sensor_blobs_path
@@ -133,7 +132,6 @@ class SceneLoader:
             raise TypeError("SceneLoader needs original_sensor_path or sensor_blobs_path")
         if scene_filter is None:
             raise TypeError("SceneLoader needs scene_filter")
-        del load_image_path
 
         self.scene_frames_dicts, stage1_scenes_final_frames_tokens = filter_scenes(data_path, scene_filter)
         self._synthetic_sensor_path = synthetic_sensor_path
@@ -141,6 +139,7 @@ class SceneLoader:
         self._sensor_blobs_path = original_sensor_path
         self._scene_filter = scene_filter
         self._sensor_config = sensor_config
+        self.load_image_path = load_image_path
 
         if scene_filter.include_synthetic_scenes:
             assert (
@@ -244,6 +243,7 @@ class SceneLoader:
                 file_path=self.synthetic_scenes[token][0],
                 sensor_blobs_path=self._synthetic_sensor_path,
                 sensor_config=self._sensor_config,
+                load_image_path=self.load_image_path,
             )
         return Scene.from_scene_dict_list(
             self.scene_frames_dicts[token],
@@ -251,6 +251,7 @@ class SceneLoader:
             num_history_frames=self._scene_filter.num_history_frames,
             num_future_frames=self._scene_filter.num_future_frames,
             sensor_config=self._sensor_config,
+            load_image_path=self.load_image_path,
         )
 
     def get_agent_input_from_token(self, token: str) -> AgentInput:
@@ -265,12 +266,14 @@ class SceneLoader:
                 file_path=self.synthetic_scenes[token][0],
                 sensor_blobs_path=self._synthetic_sensor_path,
                 sensor_config=self._sensor_config,
+                load_image_path=self.load_image_path,
             ).get_agent_input()
         return AgentInput.from_scene_dict_list(
             self.scene_frames_dicts[token],
             self._original_sensor_path,
             num_history_frames=self._scene_filter.num_history_frames,
             sensor_config=self._sensor_config,
+            load_image_path=self.load_image_path,
         )
 
     def get_tokens_list_per_log(self) -> Dict[str, List[str]]:

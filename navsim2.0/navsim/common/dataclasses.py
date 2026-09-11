@@ -63,6 +63,7 @@ class Cameras:
         sensor_blobs_path: Path,
         camera_dict: Dict[str, Any],
         sensor_names: List[str],
+        load_image_path: bool = False,
     ) -> Cameras:
         """
         Load camera dataclass from dictionary.
@@ -78,7 +79,7 @@ class Cameras:
             if camera_identifier in sensor_names:
                 image_path = sensor_blobs_path / camera_dict[camera_name]["data_path"]
                 data_dict[camera_identifier] = Camera(
-                    image=np.array(Image.open(image_path)),
+                    image=image_path if load_image_path else np.array(Image.open(image_path)),
                     sensor2lidar_rotation=camera_dict[camera_name]["sensor2lidar_rotation"],
                     sensor2lidar_translation=camera_dict[camera_name]["sensor2lidar_translation"],
                     intrinsics=camera_dict[camera_name]["cam_intrinsic"],
@@ -160,6 +161,7 @@ class AgentInput:
         sensor_blobs_path: Path,
         num_history_frames: int,
         sensor_config: SensorConfig,
+        load_image_path: bool = False,
     ) -> AgentInput:
         """
         Load agent input from scene dictionary.
@@ -211,6 +213,7 @@ class AgentInput:
                     sensor_blobs_path=sensor_blobs_path,
                     camera_dict=scene_dict_list[frame_idx]["cams"],
                     sensor_names=sensor_names,
+                    load_image_path=load_image_path,
                 )
             )
 
@@ -477,6 +480,7 @@ class Scene:
         num_history_frames: int,
         num_future_frames: int,
         sensor_config: SensorConfig,
+        load_image_path: bool = False,
     ) -> Scene:
         """
         Load scene dataclass from scene dictionary list (for log loading).
@@ -509,6 +513,7 @@ class Scene:
                 sensor_blobs_path=sensor_blobs_path,
                 camera_dict=scene_dict_list[frame_idx]["cams"],
                 sensor_names=sensor_names,
+                load_image_path=load_image_path,
             )
 
             lidar = Lidar.from_paths(
@@ -539,6 +544,7 @@ class Scene:
         num_history_frames: int,
         num_future_frames: int,
         sensor_config: SensorConfig,
+        load_image_path: bool = False,
     ) -> Scene:
         """
         Load scene dataclass from scene dictionary list (for log loading).
@@ -593,6 +599,7 @@ class Scene:
                 sensor_blobs_path=sensor_blobs_path,
                 camera_dict=scene_dict_list[frame_idx]["cams"],
                 sensor_names=sensor_names,
+                load_image_path=load_image_path,
             )
 
             frame = Frame(
@@ -676,6 +683,7 @@ class Scene:
         file_path: Path,
         sensor_blobs_path: Path,
         sensor_config: SensorConfig = None,
+        load_image_path: bool = False,
     ) -> Scene:
         """
         Load scene dataclass from disk. Only used for synthesized views.
@@ -706,6 +714,7 @@ class Scene:
                 sensor_blobs_path=sensor_blobs_path,
                 camera_dict=frame_data["camera_dict"],
                 sensor_names=sensor_names,
+                load_image_path=load_image_path,
             )
 
             scene_frames.append(

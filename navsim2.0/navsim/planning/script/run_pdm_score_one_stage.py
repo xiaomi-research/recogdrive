@@ -74,6 +74,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[p
         data_path=Path(cfg.navsim_log_path),
         scene_filter=scene_filter,
         sensor_config=agent.get_sensor_config(),
+        load_image_path=getattr(agent, "load_image_path", False),
     )
 
     tokens_to_evaluate = list(set(scene_loader.tokens) & set(metric_cache_loader.tokens))

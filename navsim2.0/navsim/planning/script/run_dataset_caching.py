@@ -46,6 +46,7 @@ def cache_features(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[
         synthetic_scenes_path=Path(cfg.synthetic_scenes_path),
         scene_filter=scene_filter,
         sensor_config=agent.get_sensor_config(),
+        load_image_path=getattr(agent, "load_image_path", False),
     )
     logger.info(f"Extracted {len(scene_loader.tokens)} scenarios for thread_id={thread_id}, node_id={node_id}.")
 

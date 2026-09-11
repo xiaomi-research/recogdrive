@@ -1,4 +1,5 @@
 from typing import Dict, Optional
+from pathlib import Path
 import torch
 import numpy as np
 import gzip
@@ -15,6 +16,13 @@ from .utils.internvl_preprocess import load_image
 
 def format_number(n, decimal_places=2):
     return f"{n:+.{decimal_places}f}" if abs(round(n, decimal_places)) > 1e-2 else "0.0"
+
+
+def _front_camera_path(cameras) -> str:
+    image = cameras[-1].cam_f0.image
+    if isinstance(image, (str, Path)):
+        return str(image)
+    raise TypeError("cam_f0.image must be a file path; pass load_image_path=True to SceneLoader")
 
 
 class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
@@ -73,7 +81,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
 
 
         if not self.cache_hidden_state:
-            image_path = str(cameras[-1].cam_f0.image)
+            image_path = _front_camera_path(cameras)
             
             path_as_ordinals = [ord(char) for char in image_path]
             
@@ -89,7 +97,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             if self.backbone is None:
                 raise RuntimeError("FeatureBuilder is in online mode, but the backbone was not initialized.")
             
-            image_path = str(cameras[-1].cam_f0.image)
+            image_path = _front_camera_path(cameras)
             if self.model_type == "qwen":
                 pixel_values_cat = [image_path]
                 num_patches_list = None
