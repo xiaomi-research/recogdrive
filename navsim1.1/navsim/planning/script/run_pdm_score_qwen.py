@@ -127,6 +127,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             logger.warning(f"----------- Agent failed for token {token}:")
             traceback.print_exc()
             score_row["valid"] = False
+            score_row["rank"] = dist.get_rank()
 
         pdm_results.append(score_row)
     serialized_score_rows = pickle.dumps(pdm_results)

@@ -50,6 +50,25 @@ def transform_targets_after_load(
 CACHE_INDEX_NAME = "valid_cache_index.json"
 
 
+def _is_nonzero_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _tokens_to_cache(scene_tokens, valid_keys, force: bool, cache_path: Path):
+    if force:
+        return list(scene_tokens)
+    missing = list(set(scene_tokens) - set(valid_keys))
+    if missing:
+        raise RuntimeError(
+            f"Refusing to write {len(missing)} missing tokens into {cache_path}. "
+            "Set force_cache_computation=True to cache, or use_cache_without_dataset=True to read only."
+        )
+    return missing
+
+
 def load_valid_cache_paths(
     cache_path: Optional[Path],
     feature_builders: List[AbstractFeatureBuilder],
@@ -73,7 +92,10 @@ def load_valid_cache_paths(
             rel_path = Path(rel)
             if log_filter is not None and rel_path.parts[0] not in log_filter:
                 continue
-            valid[token] = cache_path / rel_path
+            token_path = cache_path / rel_path
+            if not all(_is_nonzero_file(token_path / f"{name}.gz") for name in builder_names):
+                continue
+            valid[token] = token_path
         return valid
 
     if index_path.is_file():
@@ -91,7 +113,7 @@ def load_valid_cache_paths(
         for token_path in log_path.iterdir():
             if not token_path.is_dir():
                 continue
-            if all((token_path / f"{name}.gz").is_file() for name in builder_names):
+            if all(_is_nonzero_file(token_path / f"{name}.gz") for name in builder_names):
                 tokens_rel[token_path.name] = f"{log_path.name}/{token_path.name}"
     try:
         index_path.write_text(json.dumps({"builders": builder_names, "tokens": tokens_rel}))
@@ -198,8 +220,8 @@ class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
             token_path
             for token_path in self._cache_path.iterdir()
             if token_path.is_dir()
-            and (token_path / "features.gz").is_file()
-            and (token_path / "targets.gz").is_file()
+            and _is_nonzero_file(token_path / "features.gz")
+            and _is_nonzero_file(token_path / "targets.gz")
         )
 
     def __len__(self) -> int:
@@ -328,19 +350,12 @@ class Dataset(torch.utils.data.Dataset):
         assert self._cache_path is not None, "Dataset did not receive a cache path!"
         os.makedirs(self._cache_path, exist_ok=True)
 
-        # determine tokens to cache
-        if self._force_cache_computation:
-            tokens_to_cache = self._scene_loader.tokens
-        else:
-            tokens_to_cache = set(self._scene_loader.tokens) - set(self._valid_cache_paths.keys())
-            tokens_to_cache = list(tokens_to_cache)
-            logger.info(
-                f"""
-                Starting caching of {len(tokens_to_cache)} tokens.
-                Note: Caching tokens within the training loader is slow. Only use it with a small number of tokens.
-                You can cache large numbers of tokens using the `run_dataset_caching.py` python script.
-                """
-            )
+        tokens_to_cache = _tokens_to_cache(
+            self._scene_loader.tokens,
+            self._valid_cache_paths.keys(),
+            self._force_cache_computation,
+            self._cache_path,
+        )
 
         for token in tqdm(tokens_to_cache, desc="Caching Dataset"):
             self._cache_scene_with_token(token)
@@ -472,19 +487,12 @@ class Dataset_For_Traj(torch.utils.data.Dataset):
         assert self._cache_path is not None, "Dataset did not receive a cache path!"
         os.makedirs(self._cache_path, exist_ok=True)
 
-        # determine tokens to cache
-        if self._force_cache_computation:
-            tokens_to_cache = self._scene_loader.tokens
-        else:
-            tokens_to_cache = set(self._scene_loader.tokens) - set(self._valid_cache_paths.keys())
-            tokens_to_cache = list(tokens_to_cache)
-            logger.info(
-                f"""
-                Starting caching of {len(tokens_to_cache)} tokens.
-                Note: Caching tokens within the training loader is slow. Only use it with a small number of tokens.
-                You can cache large numbers of tokens using the `run_dataset_caching.py` python script.
-                """
-            )
+        tokens_to_cache = _tokens_to_cache(
+            self._scene_loader.tokens,
+            self._valid_cache_paths.keys(),
+            self._force_cache_computation,
+            self._cache_path,
+        )
 
         for token in tqdm(tokens_to_cache, desc="Caching Dataset"):
             self._cache_scene_with_token(token)
@@ -612,19 +620,12 @@ class Dataset_For_Pipeline(torch.utils.data.Dataset):
         assert self._cache_path is not None, "Dataset did not receive a cache path!"
         os.makedirs(self._cache_path, exist_ok=True)
 
-        # determine tokens to cache
-        if self._force_cache_computation:
-            tokens_to_cache = self._scene_loader.tokens
-        else:
-            tokens_to_cache = set(self._scene_loader.tokens) - set(self._valid_cache_paths.keys())
-            tokens_to_cache = list(tokens_to_cache)
-            logger.info(
-                f"""
-                Starting caching of {len(tokens_to_cache)} tokens.
-                Note: Caching tokens within the training loader is slow. Only use it with a small number of tokens.
-                You can cache large numbers of tokens using the `run_dataset_caching.py` python script.
-                """
-            )
+        tokens_to_cache = _tokens_to_cache(
+            self._scene_loader.tokens,
+            self._valid_cache_paths.keys(),
+            self._force_cache_computation,
+            self._cache_path,
+        )
 
         for token in tqdm(tokens_to_cache, desc="Caching Dataset"):
             self._cache_scene_with_token(token)

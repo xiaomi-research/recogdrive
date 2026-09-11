@@ -15,7 +15,10 @@ MASTER_PORT=${MASTER_PORT:-63669}
 PORT=${PORT:-63665}
 GPUS=${GPUS:-8}
 GPUS_PER_NODE=${GPUS_PER_NODE:-8}
-NODES=$((GPUS / GPUS_PER_NODE))
+if (( GPUS < GPUS_PER_NODE )); then
+  GPUS_PER_NODE=$GPUS
+fi
+NODES=$(( (GPUS + GPUS_PER_NODE - 1) / GPUS_PER_NODE ))
 export MASTER_PORT=${MASTER_PORT}
 export PORT=${PORT}
 
@@ -33,7 +36,7 @@ CHECKPOINT="/path/to/recogdrive.ckpt"
 
 
 torchrun \
-    --nproc_per_node=8 \
+    --nproc_per_node=${GPUS_PER_NODE} \
     $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_pdm_score_recogdrive.py \
     train_test_split=$TRAIN_TEST_SPLIT \
     agent=recogdrive_agent \

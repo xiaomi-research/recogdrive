@@ -44,7 +44,7 @@ outputs=(
 # Loop over the arrays and run the commands.
 for i in "${!outputs[@]}"; do
     python inference/internvl.py \
-        --model '/high_perf_store3/world-model/yongkangli/data/NAVSIM/internvl_chat/work_dirs/VLA-Navsim/internvl3_8b_finetune_full_baseline_com_his_mix_training_final_no_llava_all_llava_clean_pipelinev5_internvl3' \
+        --model '/path/to/internvl3_finetune_model' \
         --data data/drivebench-test-final.json \
         --output "res/llava-1.5-7b/${outputs[i]}" \
         --system_prompt prompt.txt \

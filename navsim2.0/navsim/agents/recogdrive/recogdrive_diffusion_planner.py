@@ -375,18 +375,18 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         betas_clipped = np.clip(betas, a_min=0, a_max=0.999)
         return torch.tensor(betas_clipped, dtype=dtype)
 
-    @staticmethod
-    def extract(a: torch.Tensor, t: torch.Tensor, x_shape: tuple) -> torch.Tensor:
+    def extract(self, a: torch.Tensor, t: torch.Tensor, x_shape: tuple) -> torch.Tensor:
         """
         Extracts values from tensor `a` at indices `t` and reshapes them
         to be broadcastable with a tensor of shape `x_shape`.
-        
-        This method is static as it does not depend on the instance's state.
         """
         b, *_ = t.shape
         if a.device != t.device:
             a = a.to(device=t.device)
         out = a.gather(-1, t)
+        target = next(self.parameters()).dtype
+        if out.dtype != target:
+            out = out.to(target)
         return out.reshape(b, *((1,) * (len(x_shape) - 1)))
 
     @staticmethod

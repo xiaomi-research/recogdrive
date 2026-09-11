@@ -38,6 +38,11 @@ sympy  # Use for symbolic algebra
 tornado  # Used in nuboard.py
 tqdm  # Used widely
 ujson  # Used in serialiation_callback.py
+transformers
+accelerate
+deepspeed
+decord
+qwen-vl-utils
 
 torch==2.0.1
 torchvision==0.15.2

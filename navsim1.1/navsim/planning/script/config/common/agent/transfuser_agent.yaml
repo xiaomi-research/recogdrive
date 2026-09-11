@@ -13,5 +13,5 @@ config:
 
   latent: False
 
-checkpoint_path: '/high_perf_store3/world-model/yongkangli/data/NAVSIM/navsim-main/pytorch_model.bin'
+checkpoint_path: null
 lr: 1e-4

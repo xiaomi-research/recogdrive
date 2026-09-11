@@ -37,6 +37,11 @@ tornado  # Used in nuboard.py
 tqdm  # Used widely
 ujson  # Used in serialiation_callback.py
 diffusers
+transformers
+accelerate
+deepspeed
+decord
+qwen-vl-utils
 
 torch
 torchvision

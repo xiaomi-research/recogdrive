@@ -12,7 +12,6 @@ from torch import nn
 
 from navsim.agents.transfuser.transfuser_config import TransfuserConfig
 
-from timm.models.resnet import _cfg
 
 class TransfuserBackbone(nn.Module):
     """Multi-scale Fusion Transformer for image + LiDAR feature fusion."""
@@ -21,8 +20,7 @@ class TransfuserBackbone(nn.Module):
 
         super().__init__()
         self.config = config
-        model_config = _cfg(url='', file='/high_perf_store3/world-model/yongkangli/data/NAVSIM/navsim-main/pytorch_model.bin')
-        self.image_encoder = timm.create_model(config.image_architecture, pretrained=True, features_only=True, pretrained_cfg=model_config)
+        self.image_encoder = timm.create_model(config.image_architecture, pretrained=True, features_only=True)
         if config.use_ground_plane:
             in_channels = 2 * config.lidar_seq_len
         else:

@@ -175,7 +175,7 @@ class SceneLoader:
         """
         reactive_synthetic_initial_tokens = self._scene_filter.reactive_synthetic_initial_tokens
         if reactive_synthetic_initial_tokens is None:
-            return None
+            return []
         return list(set(self.synthetic_scenes_tokens) & set(reactive_synthetic_initial_tokens))
 
     @property
@@ -186,7 +186,7 @@ class SceneLoader:
         """
         non_reactive_synthetic_initial_tokens = self._scene_filter.non_reactive_synthetic_initial_tokens
         if non_reactive_synthetic_initial_tokens is None:
-            return None
+            return []
         return list(set(self.synthetic_scenes_tokens) & set(non_reactive_synthetic_initial_tokens))
 
     @property

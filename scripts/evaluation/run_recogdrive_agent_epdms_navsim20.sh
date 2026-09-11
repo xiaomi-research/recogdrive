@@ -12,7 +12,7 @@ CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache}"
 CHECKPOINT="${CHECKPOINT:-/path/to/recogdrive.ckpt}"
 VLM_PATH="${VLM_PATH:-/path/to/internvl3_pretrain_model}"
 
-python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score.py" \
+python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score_one_stage.py" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   agent=recogdrive_agent \
   agent.checkpoint_path="${CHECKPOINT}" \
@@ -25,5 +25,4 @@ python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score.py" \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
   experiment_name=recogdrive_agent_epdms_navsim20 \
-  traffic_agents_policy=non_reactive \
   metric_cache_path="${CACHE_PATH}"
