@@ -47,6 +47,24 @@ def transform_targets_after_load(
     return transformed_targets
 
 
+def _maybe_worker_image_preprocess(features: Dict[str, torch.Tensor]) -> None:
+    """Decode cached image paths inside the dataloader worker. Off unless RECOGDRIVE_WORKER_IMAGE_PREPROCESS is set."""
+    if os.environ.get("RECOGDRIVE_WORKER_IMAGE_PREPROCESS", "").lower() not in {"1", "true", "yes"}:
+        return
+    path_tensor = features.get("image_path_tensor")
+    if not isinstance(path_tensor, torch.Tensor):
+        return
+    from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+    from navsim.agents.recogdrive.utils.internvl_preprocess import load_image
+
+    if path_tensor.ndim == 1:
+        path_tensor = path_tensor.unsqueeze(0)
+    image_paths = ReCogDriveAgent._decode_paths_from_tensor(path_tensor)
+    pixel_values_list = [load_image(path) for path in image_paths]
+    features["pixel_values"] = torch.cat(pixel_values_list, dim=0)
+    features["num_patches"] = torch.tensor([pv.shape[0] for pv in pixel_values_list])
+
+
 CACHE_INDEX_NAME = "valid_cache_index.json"
 
 
@@ -182,6 +200,7 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             data_dict = load_feature_target_from_pickle(data_dict_path)
             features.update(data_dict)
+        _maybe_worker_image_preprocess(features)
 
         targets: Dict[str, torch.Tensor] = {}
         for builder in self._target_builders:
@@ -330,6 +349,7 @@ class Dataset(torch.utils.data.Dataset):
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             data_dict = load_feature_target_from_pickle(data_dict_path)
             features.update(data_dict)
+        _maybe_worker_image_preprocess(features)
 
         targets: Dict[str, torch.Tensor] = {}
         for builder in self._target_builders:
@@ -384,6 +404,7 @@ class Dataset(torch.utils.data.Dataset):
             agent_input = scene.get_agent_input()
             for builder in self._feature_builders:
                 features.update(builder.compute_features(agent_input))
+            _maybe_worker_image_preprocess(features)
             for builder in self._target_builders:
                 targets.update(builder.compute_targets(scene))
             targets = transform_targets_after_load(targets, self._target_builders)
