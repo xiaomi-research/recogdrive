@@ -47,35 +47,19 @@ def transform_targets_after_load(
     return transformed_targets
 
 
-def _maybe_worker_image_preprocess(features: Dict[str, torch.Tensor]) -> None:
-    """Decode cached image paths inside the dataloader worker. Off unless RECOGDRIVE_WORKER_IMAGE_PREPROCESS is set."""
-    if os.environ.get("RECOGDRIVE_WORKER_IMAGE_PREPROCESS", "").lower() not in {"1", "true", "yes"}:
-        return
-    path_tensor = features.get("image_path_tensor")
-    if not isinstance(path_tensor, torch.Tensor):
-        return
-    from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
-    from navsim.agents.recogdrive.utils.internvl_preprocess import load_image
-
-    if path_tensor.ndim == 1:
-        path_tensor = path_tensor.unsqueeze(0)
-    image_paths = ReCogDriveAgent._decode_paths_from_tensor(path_tensor)
-    pixel_values_list = [load_image(path) for path in image_paths]
-    features["pixel_values"] = torch.cat(pixel_values_list, dim=0)
-    features["num_patches"] = torch.tensor([pv.shape[0] for pv in pixel_values_list])
 
 
 CACHE_INDEX_NAME = "valid_cache_index.json"
 
 
-def _is_nonzero_file(path: Path) -> bool:
+def is_nonzero_file(path: Path) -> bool:
     try:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
 
 
-def _tokens_to_cache(scene_tokens, valid_keys, force: bool, cache_path: Path):
+def select_tokens_to_cache(scene_tokens, valid_keys, force: bool, cache_path: Path):
     if force:
         return list(scene_tokens)
     missing = list(set(scene_tokens) - set(valid_keys))
@@ -111,7 +95,7 @@ def load_valid_cache_paths(
             if log_filter is not None and rel_path.parts[0] not in log_filter:
                 continue
             token_path = cache_path / rel_path
-            if not all(_is_nonzero_file(token_path / f"{name}.gz") for name in builder_names):
+            if not all(is_nonzero_file(token_path / f"{name}.gz") for name in builder_names):
                 continue
             valid[token] = token_path
         return valid
@@ -131,7 +115,7 @@ def load_valid_cache_paths(
         for token_path in log_path.iterdir():
             if not token_path.is_dir():
                 continue
-            if all(_is_nonzero_file(token_path / f"{name}.gz") for name in builder_names):
+            if all(is_nonzero_file(token_path / f"{name}.gz") for name in builder_names):
                 tokens_rel[token_path.name] = f"{log_path.name}/{token_path.name}"
     return from_rel(tokens_rel)
 
@@ -200,7 +184,6 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             data_dict = load_feature_target_from_pickle(data_dict_path)
             features.update(data_dict)
-        _maybe_worker_image_preprocess(features)
 
         targets: Dict[str, torch.Tensor] = {}
         for builder in self._target_builders:
@@ -210,54 +193,6 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         targets = transform_targets_after_load(targets, self._target_builders)
 
         return (features, targets, token)
-
-
-class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
-    """Dataset wrapper for RAP-style Waymo E2E feature/target caches."""
-
-    def __init__(
-        self,
-        cache_path: str,
-        split: str,
-        target_builders: Optional[List[AbstractTargetBuilder]] = None,
-    ):
-        """
-        Initializes the Waymo E2E cached dataset.
-        :param cache_path: root cache folder with split subfolders.
-        :param split: split folder name, e.g. "training" or "val".
-        """
-        super().__init__()
-        split_path = Path(cache_path) / split
-        assert split_path.is_dir(), f"Waymo E2E cache split path {split_path} does not exist!"
-        self._cache_path = split_path
-        self._target_builders = target_builders
-        self.tokens = sorted(
-            token_path
-            for token_path in self._cache_path.iterdir()
-            if token_path.is_dir()
-            and _is_nonzero_file(token_path / "features.gz")
-            and _is_nonzero_file(token_path / "targets.gz")
-        )
-
-    def __len__(self) -> int:
-        """
-        :return: number of cached samples to load.
-        """
-        return len(self.tokens)
-
-    def __getitem__(self, idx: int) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], str]:
-        """
-        Loads and returns a feature dict, target dict, and token string.
-        :param idx: index of sample to load.
-        :return: tuple of feature dictionary, target dictionary, and token.
-        """
-        token_path = self.tokens[idx]
-
-        features = load_feature_target_from_pickle(token_path / "features.gz")
-        targets = load_feature_target_from_pickle(token_path / "targets.gz")
-        targets = transform_targets_after_load(targets, self._target_builders)
-
-        return features, targets, token_path.name
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -349,7 +284,6 @@ class Dataset(torch.utils.data.Dataset):
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             data_dict = load_feature_target_from_pickle(data_dict_path)
             features.update(data_dict)
-        _maybe_worker_image_preprocess(features)
 
         targets: Dict[str, torch.Tensor] = {}
         for builder in self._target_builders:
@@ -366,7 +300,7 @@ class Dataset(torch.utils.data.Dataset):
         assert self._cache_path is not None, "Dataset did not receive a cache path!"
         os.makedirs(self._cache_path, exist_ok=True)
 
-        tokens_to_cache = _tokens_to_cache(
+        tokens_to_cache = select_tokens_to_cache(
             self._scene_loader.tokens,
             self._valid_cache_paths.keys(),
             self._force_cache_computation,
@@ -404,7 +338,6 @@ class Dataset(torch.utils.data.Dataset):
             agent_input = scene.get_agent_input()
             for builder in self._feature_builders:
                 features.update(builder.compute_features(agent_input))
-            _maybe_worker_image_preprocess(features)
             for builder in self._target_builders:
                 targets.update(builder.compute_targets(scene))
             targets = transform_targets_after_load(targets, self._target_builders)
@@ -504,7 +437,7 @@ class Dataset_For_Traj(torch.utils.data.Dataset):
         assert self._cache_path is not None, "Dataset did not receive a cache path!"
         os.makedirs(self._cache_path, exist_ok=True)
 
-        tokens_to_cache = _tokens_to_cache(
+        tokens_to_cache = select_tokens_to_cache(
             self._scene_loader.tokens,
             self._valid_cache_paths.keys(),
             self._force_cache_computation,
@@ -637,7 +570,7 @@ class Dataset_For_Pipeline(torch.utils.data.Dataset):
         assert self._cache_path is not None, "Dataset did not receive a cache path!"
         os.makedirs(self._cache_path, exist_ok=True)
 
-        tokens_to_cache = _tokens_to_cache(
+        tokens_to_cache = select_tokens_to_cache(
             self._scene_loader.tokens,
             self._valid_cache_paths.keys(),
             self._force_cache_computation,

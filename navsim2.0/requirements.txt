@@ -40,8 +40,7 @@ tqdm  # Used widely
 ujson  # Used in serialiation_callback.py
 diffusers==0.35.2
 transformers==4.57.1
-accelerate
-deepspeed
+accelerate  # transformers needs it for device_map / low_cpu_mem_usage loading
 decord
 qwen-vl-utils
 

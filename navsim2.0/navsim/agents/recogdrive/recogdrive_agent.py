@@ -1,5 +1,12 @@
+"""ReCogDrive as a NAVSIM agent: sensors, feature/target builders, trajectory inference, and the
+training glue (checkpoint loading, loss, optimizers, GRPO reward). The network is the backbone and
+diffusion planner imported below."""
+
 from typing import Any, List, Dict, Optional, Union
 import contextlib
+import functools
+import inspect
+import itertools
 import os
 import torch
 from torch.optim import Optimizer
@@ -15,17 +22,37 @@ from navsim.common.dataclasses import AgentInput, SensorConfig, Trajectory
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
+from .recogdrive_features import ReCogDriveFeatureBuilder, TrajectoryTargetBuilder
+from .recogdrive_backbone import RecogDriveBackbone, hidden_size_from_vlm_config
+from .recogdrive_diffusion_planner import ReCogDriveDiffusionPlanner, make_recogdrive_config
+from .muon import Muon
+from .trajectory_utils import delta_to_waypoint, validate_training_target
 from .utils.internvl_preprocess import load_image
 from .utils.lr_scheduler import WarmupCosLR
 from .utils.utils import format_number, build_from_configs
-from .recogdrive_features import ReCogDriveFeatureBuilder ,TrajectoryTargetBuilder
-from .recogdrive_backbone import RecogDriveBackbone, hidden_size_from_vlm_config
-from .recogdrive_diffusion_planner import (
-    ReCogDriveDiffusionPlanner,
-    ReCogDriveDiffusionPlannerConfig,
-)
-from .trajectory_utils import delta_to_waypoint, validate_training_target
-from .muon import Muon
+
+# NAVSIM 2.0's AbstractAgent takes the trajectory sampling, 1.1's takes nothing.
+AGENT_TAKES_SAMPLING = "trajectory_sampling" in inspect.signature(AbstractAgent.__init__).parameters
+
+
+def prepare_vlm_inputs(features: Dict[str, torch.Tensor], load_tiles: bool) -> Dict[str, torch.Tensor]:
+    """Runs in dataloader workers: prompt and image path as Python strings, so the model never reads
+    them back from GPU tensors, plus the InternVL tiles when load_tiles."""
+    path_tensor = features.get("image_path_tensor")
+    if not isinstance(path_tensor, torch.Tensor):
+        return features
+    if path_tensor.ndim == 1:
+        path_tensor = path_tensor.unsqueeze(0)
+    image_paths = ReCogDriveAgent.decode_paths_from_tensor(path_tensor)
+    features["image_paths"] = image_paths[0]
+    features["vlm_question"] = ReCogDriveAgent.vlm_questions(
+        features["history_trajectory"], features["high_command_one_hot"]
+    )[0]
+    if load_tiles:
+        pixel_values_list = [load_image(path) for path in image_paths]
+        features["pixel_values"] = torch.cat(pixel_values_list, dim=0)
+        features["num_patches"] = torch.tensor([pv.shape[0] for pv in pixel_values_list])
+    return features
 
 
 class ReCogDriveAgent(AbstractAgent):
@@ -59,7 +86,7 @@ class ReCogDriveAgent(AbstractAgent):
         grpo_sample_time: int = 8,
         optimizer_type: str = "adamw",
     ):
-        super().__init__(trajectory_sampling)
+        super().__init__(trajectory_sampling) if AGENT_TAKES_SAMPLING else super().__init__()
         self._trajectory_sampling = trajectory_sampling
         self.vlm_path = vlm_path
         self.checkpoint_path = checkpoint_path
@@ -88,7 +115,7 @@ class ReCogDriveAgent(AbstractAgent):
             raise ValueError(f"Unsupported optimizer_type: {optimizer_type!r}")
         self._grpo_rollout = None
         if self.vlm_hidden_size is None and self.vlm_type.lower() == "qwen" and self.vlm_path:
-            self.vlm_hidden_size = self._infer_vlm_hidden_size(self.vlm_path)
+            self.vlm_hidden_size = self.infer_vlm_hidden_size(self.vlm_path)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -141,7 +168,6 @@ class ReCogDriveAgent(AbstractAgent):
         cfg.grpo_cfg.flow_sde_type = self.flow_sde_type
 
         if self.grpo:
-            cfg.grpo_cfg.metric_cache_path = self.metric_cache_path
             cfg.grpo_cfg.reference_policy_checkpoint = self.reference_policy_checkpoint
             cfg.grpo_cfg.num_iterations = self.grpo_num_iterations
             cfg.grpo_cfg.clip_eps = self.grpo_clip_eps
@@ -150,11 +176,21 @@ class ReCogDriveAgent(AbstractAgent):
             cfg.grpo_cfg.sample_time = self.grpo_sample_time
             
         self.action_head = ReCogDriveDiffusionPlanner(cfg).cuda()
+        if self.grpo:
+            from .recogdrive_reward import PDMReward
+
+            self.action_head.reward_fn = PDMReward(self.metric_cache_path)
         self.num_inference_samples = 1
         self.inference_selection_mode = "median"
 
     def name(self) -> str:
         return self.__class__.__name__
+
+    def worker_transform(self):
+        if self.cache_hidden_state:
+            return None
+        # Qwen consumes image paths itself; InternVL tiles are built in the dataloader workers.
+        return functools.partial(prepare_vlm_inputs, load_tiles=self.vlm_type.lower() != "qwen")
 
     def initialize(self) -> None:
         if self.checkpoint_path:
@@ -191,7 +227,8 @@ class ReCogDriveAgent(AbstractAgent):
             self.backbone.eval()
         return self
 
-    def _vlm_questions(self, history_trajectory: torch.Tensor, high_command_one_hot: torch.Tensor) -> List[str]:
+    @staticmethod
+    def vlm_questions(history_trajectory: torch.Tensor, high_command_one_hot: torch.Tensor) -> List[str]:
         if history_trajectory.ndim == 2:
             history_trajectory = history_trajectory.unsqueeze(0)
         if high_command_one_hot.ndim == 1:
@@ -203,7 +240,8 @@ class ReCogDriveAgent(AbstractAgent):
         questions = []
         for i in range(high_command_one_hot.shape[0]):
             sample = history_trajectory[i]
-            command_str = navigation_commands[int(command_indices[i])]
+            index = int(command_indices[i])
+            command_str = navigation_commands[index] if index < len(navigation_commands) else "unknown"
             history_str = ' '.join([
                 f'   - t-{3-j}: ({format_number(float(sample[j, 0]))}, '
                 f'{format_number(float(sample[j, 1]))}, '
@@ -239,14 +277,20 @@ class ReCogDriveAgent(AbstractAgent):
         num_patches_list = None
         image_paths = None
         if not self.cache_hidden_state:
-            questions = self._vlm_questions(features["history_trajectory"], features["high_command_one_hot"])
+            if "vlm_question" in features:
+                questions = list(features["vlm_question"])
+            else:
+                questions = self.vlm_questions(features["history_trajectory"], features["high_command_one_hot"])
             if "num_patches" in features:
-                num_patches_list = [int(n) for n in features["num_patches"].tolist()]
-            if "image_path_tensor" in features:
+                counts = features["num_patches"]
+                num_patches_list = [int(n) for n in (counts.tolist() if torch.is_tensor(counts) else counts)]
+            if "image_paths" in features:
+                image_paths = list(features["image_paths"])
+            elif "image_path_tensor" in features:
                 path_tensor = features["image_path_tensor"]
                 if path_tensor.ndim == 1:
                     path_tensor = path_tensor.unsqueeze(0)
-                image_paths = self._decode_paths_from_tensor(path_tensor)
+                image_paths = self.decode_paths_from_tensor(path_tensor)
 
         for key, tensor in features.items():
             if isinstance(tensor, torch.Tensor):
@@ -348,7 +392,7 @@ class ReCogDriveAgent(AbstractAgent):
         elif self.training:
             return predictions.loss
         else:
-            target_trajectory = self._target_to_waypoint(targets["trajectory"]).to(predictions["pred_traj"].device)
+            target_trajectory = self.target_to_waypoint(targets["trajectory"]).to(predictions["pred_traj"].device)
             return torch.nn.functional.l1_loss(predictions["pred_traj"], target_trajectory)
 
     def get_optimizers(self) -> Union[Optimizer, Dict[str, LRScheduler]]:
@@ -359,7 +403,7 @@ class ReCogDriveAgent(AbstractAgent):
         if self.optimizer_type == "muon":
             optimizer = Muon(params, lr=self._lr, weight_decay=1e-4, adamw_betas=(0.9, 0.95))
         else:
-            optimizer_cfg = DictConfig(dict(type="AdamW", lr=self._lr, weight_decay=1e-4, betas=(0.9, 0.95)))
+            optimizer_cfg = DictConfig(dict(type="AdamW", lr=self._lr, weight_decay=1e-4, betas=(0.9, 0.95), fused=torch.cuda.is_available()))
             optimizer = build_from_configs(optim, optimizer_cfg, params=params)
         
         if self.grpo:
@@ -370,7 +414,7 @@ class ReCogDriveAgent(AbstractAgent):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     @staticmethod
-    def _decode_paths_from_tensor(path_tensor: torch.Tensor) -> List[str]:
+    def decode_paths_from_tensor(path_tensor: torch.Tensor) -> List[str]:
         """
         Decodes a batch of path tensors back into a list of file path strings.
         
@@ -381,93 +425,18 @@ class ReCogDriveAgent(AbstractAgent):
         Returns:
             List[str]: A list of decoded file path strings.
         """
-        decoded_paths = []
-        for single_path_tensor in path_tensor:
-            chars = []
-            for code in single_path_tensor:
-                code_item = code.item()
-                if code_item == 0: 
-                    break
-                chars.append(chr(code_item))
-            decoded_paths.append("".join(chars))
-        return decoded_paths
+        # One host copy for the whole batch; per-element .item() on a CUDA tensor syncs once per character.
+        return ["".join(map(chr, itertools.takewhile(bool, row))) for row in path_tensor.tolist()]
 
-    def _target_to_waypoint(self, target: torch.Tensor) -> torch.Tensor:
+    def target_to_waypoint(self, target: torch.Tensor) -> torch.Tensor:
         if self.training_target == "delta":
             return delta_to_waypoint(target, self._trajectory_sampling.interval_length)
         return target
 
     @staticmethod
-    def _infer_vlm_hidden_size(vlm_path: str) -> Optional[int]:
+    def infer_vlm_hidden_size(vlm_path: str) -> Optional[int]:
         try:
             return hidden_size_from_vlm_config(AutoConfig.from_pretrained(vlm_path, trust_remote_code=True))
         except Exception as exc:
             print(f"Warning: failed to infer VLM hidden size from {vlm_path}: {exc}")
             return None
-
-def make_recogdrive_config(
-    size: str,
-    *,
-    action_dim: int,
-    action_horizon: int,
-    input_embedding_dim: int,
-    sampling_method: str = 'ddim',
-    num_inference_steps: int = 5,
-    grpo: bool = False,
-    model_dtype: str = "float16",
-    training_target: str = "waypoint",
-    delta_interval_length: float = 0.5,
-    vlm_hidden_size: Optional[int] = None,
-) -> ReCogDriveDiffusionPlannerConfig:
-    """
-    A factory function to create a ReCogDriveDiffusionPlannerConfig object.
-
-    This function simplifies configuration by using a size preset ("small",
-    "large", "large_new") to define the core DiT architecture, while allowing
-    other important planner settings to be specified.
-
-    Args:
-        size (str): The size preset for the DiT backbone.
-        action_dim (int): The dimension of the action space.
-        action_horizon (int): The number of future action steps to predict.
-        input_embedding_dim (int): Dimension of the input embeddings to the DiT.
-        sampling_method (str): The core training and sampling methodology.
-        num_inference_steps (int): Number of steps for inference sampling.
-        grpo (bool): If True, enables GRPO-specific logic.
-        model_dtype (str): The data type for model computations.
-        training_target (str): Train the planner on 'waypoint' poses or 'delta' velocities.
-
-    Returns:
-        ReCogDriveDiffusionPlannerConfig: An instantiated and configured planner config object.
-    """
-    size = size.lower()
-    if size == "small":
-        diffusion_model_cfg = {"num_heads": 8, "head_dim": 48, "num_layers": 16,"output_dim":512}
-    elif size == "large":
-        diffusion_model_cfg = {"num_heads": 32, "head_dim": 48, "num_layers": 16,"output_dim":1536}
-    else:
-        raise ValueError(f"Unknown model size: {size!r}")
-
-    common_params: Dict[str, any] = {
-        "dropout": 0.0,
-        "attention_bias": True,
-        "norm_eps": 1e-5,
-        "interleave_attention": True,
-    }
-    diffusion_model_cfg.update(common_params)
-
-    config = ReCogDriveDiffusionPlannerConfig(
-        diffusion_model_cfg=diffusion_model_cfg,
-        action_dim=action_dim,
-        action_horizon=action_horizon,
-        input_embedding_dim=input_embedding_dim,
-        sampling_method=sampling_method,
-        num_inference_steps=num_inference_steps,
-        grpo=grpo,
-        model_dtype=model_dtype,
-        training_target=validate_training_target(training_target),
-        delta_interval_length=delta_interval_length,
-        vlm_hidden_size=vlm_hidden_size,
-    )
-    
-    return config

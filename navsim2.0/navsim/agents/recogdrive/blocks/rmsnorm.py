@@ -19,7 +19,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x: torch.Tensor) -> torch.Tensor:
+    def norm(self, x: torch.Tensor) -> torch.Tensor:
         """
         Apply the RMSNorm normalization to the input tensor.
 
@@ -41,5 +41,5 @@ class RMSNorm(nn.Module):
         Returns:
             torch.Tensor: The output tensor after applying RMSNorm.
         """
-        output = self._norm(x.float()).type_as(x)
+        output = self.norm(x.float()).type_as(x)
         return output * self.weight

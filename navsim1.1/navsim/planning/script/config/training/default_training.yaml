@@ -22,22 +22,38 @@ waymoe2e: false
 waymoe2e_train_split: training
 waymoe2e_val_split: val
 seed: 0
+data_loader: null  # registered loader: navsim | waymoe2e | nuscenes; null: navsim, or waymoe2e when waymoe2e=true
+nuscenes:
+  root: null  # directory holding samples/ and v1.0-*/
+  version: v1.0-mini
+max_steps: 0
+skip_validation: false
 
-use_deepspeed: True
+train:
+  strategy: fsdp  # fsdp | ddp
+  precision: bf16  # compute dtype of FSDP-managed parameters: bf16 | fp32 (ddp: fp32 only)
+  reshard_after_forward: false  # false: fastest; true: least memory, re-gathers in backward
+  hsdp_shard_size: null  # multi-node: GPUs per node, shards within a node and replicates across nodes
+  fsdp_wrap_modules: []  # block class names; empty: repeated blocks and HF _no_split_modules
+  replicate_frozen: [backbone]  # frozen params under these module paths stay whole on every rank
+  prefetch_distance: 1
+  compile: true
+  activation_checkpointing: []  # module class names recomputed in backward
+  log_every: 10
+  save_every_n_steps: 0
+  resume: false
+  async_save: true
+  top_k: 5
 
-deepspeed:
-  train_micro_batch_size_per_gpu: 16
-  gradient_accumulation_steps: 1
-  zero_optimization:
-    stage: 1
-    offload_optimizer:
-      device: none
-  fp16:
-    enabled: true
-  bf16:
-    enabled: false
-  gradient_clipping: 1.0
-
+evaluator:
+  name: null  # navsim
+  every_n_epochs: 0  # 0: only the final checkpoint
+  on_end: true
+  split: navtest
+  metric_cache_path: null
+  gpus: null  # CUDA_VISIBLE_DEVICES of the eval job; during training point it at GPUs training does not use
+  nproc: null
+  overrides: []
 
 dataloader:
   params:

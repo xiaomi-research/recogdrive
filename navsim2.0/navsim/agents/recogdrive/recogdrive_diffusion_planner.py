@@ -14,10 +14,10 @@
 from __future__ import annotations
 
 import copy
+import functools
 import math
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Callable, Dict, List, Literal, Optional
 
 import numpy as np
 import torch
@@ -27,20 +27,6 @@ from torch.distributions import Beta, Normal, kl_divergence
 import torch.nn.functional as F
 from transformers import PretrainedConfig
 from transformers.feature_extraction_utils import BatchFeature
-
-from navsim.common.dataclasses import Trajectory
-from navsim.common.dataloader import MetricCacheLoader
-from navsim.evaluate.pdm_score import pdm_pred_scores
-from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import (
-    PDMScorer,
-    PDMScorerConfig,
-)
-from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import (
-    PDMSimulator,
-)
-from nuplan.planning.simulation.trajectory.trajectory_sampling import (
-    TrajectorySampling,
-)
 
 from .blocks.encoder import (
     ActionEncoder,
@@ -55,6 +41,16 @@ WAYPOINT_NORM_MIN = [-1.57, -19.68, -1.67]
 WAYPOINT_NORM_MAX = [65.17, 22.32, 1.86]
 DELTA_NORM_MIN = [-1.62, -9.38, -1.02]
 DELTA_NORM_MAX = [29.72, 9.98, 0.86]
+
+
+@functools.lru_cache(maxsize=None)
+def action_norm_bounds(training_target: str, device: torch.device, dtype: torch.dtype):
+    """(1, 1, 3) min/max tensors, built once per device and dtype: building them every step syncs the GPU."""
+    low, high = (WAYPOINT_NORM_MIN, WAYPOINT_NORM_MAX) if training_target == "waypoint" else (DELTA_NORM_MIN, DELTA_NORM_MAX)
+    if any(h <= l for l, h in zip(low, high)):
+        raise ValueError("All action norm max values must be greater than min values.")
+    return (torch.tensor(low, device=device, dtype=dtype).view(1, 1, -1),
+            torch.tensor(high, device=device, dtype=dtype).view(1, 1, -1))
 
 @dataclass
 class FlowConfig:
@@ -99,11 +95,7 @@ class GRPOConfig:
     bc_coeff: float = 0.1
     sample_time: int = 8
     
-    metric_cache_path: str = "/path/to/metric_cache_train"
     reference_policy_checkpoint: str = "/path/to/IL_Model.ckpt"
-    scorer_config: PDMScorerConfig = field(default_factory=lambda: PDMScorerConfig(
-        progress_weight=10.0, ttc_weight=5.0, history_comfort_weight=2.0
-    ))
 
 
 @dataclass
@@ -224,21 +216,21 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
         
         if self.config.sampling_method == 'flow':
-            self._init_flow_sampler(config.flow_cfg)
+            self.init_flow_sampler(config.flow_cfg)
         elif self.config.sampling_method == 'ddpm':
-            self._init_ddpm_sampler(config.ddpm_cfg)
+            self.init_ddpm_sampler(config.ddpm_cfg)
         elif self.config.sampling_method == 'ddim':
-            self._init_ddim_sampler(config.ddim_cfg)
+            self.init_ddim_sampler(config.ddim_cfg)
 
         if config.grpo:
-            self._init_grpo(config.grpo_cfg)
+            self.init_grpo(config.grpo_cfg)
 
-    def _init_flow_sampler(self, cfg: FlowConfig):
+    def init_flow_sampler(self, cfg: FlowConfig):
         """Initializes components required for Flow Matching."""
         self.beta_dist = Beta(cfg.noise_beta_alpha, cfg.noise_beta_beta)
         self.num_timestep_buckets = cfg.num_timestep_buckets
 
-    def _init_ddpm_sampler(self, cfg: DDPMConfig):
+    def init_ddpm_sampler(self, cfg: DDPMConfig):
         """Initializes buffers required for DDPM, using original naming."""
         self.ddpm_num_train_timesteps = cfg.num_train_timesteps
         ddpm_betas = self.cosine_beta_schedule(cfg.num_train_timesteps)
@@ -265,15 +257,15 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.register_buffer('ddpm_mu_coef1', ddpm_betas * torch.sqrt(ddpm_alphas_cumprod_prev) / (1.0 - ddpm_alphas_cumprod))
         self.register_buffer('ddpm_mu_coef2', (1.0 - ddpm_alphas_cumprod_prev) * torch.sqrt(ddpm_alphas) / (1.0 - ddpm_alphas_cumprod))
 
-    def _ddpm_inference_timesteps(self) -> List[int]:
+    def ddpm_inference_timesteps(self) -> List[int]:
         num_train = self.config.ddpm_cfg.num_train_timesteps
         num_infer = self.config.num_inference_steps
         step_size = max(num_train // num_infer, 1)
         return list(reversed(range(0, num_train, step_size)))
 
-    def _init_ddim_sampler(self, cfg: DDIMConfig):
+    def init_ddim_sampler(self, cfg: DDIMConfig):
         """Initializes buffers required for DDIM sampling, using original naming."""
-        self._init_ddpm_sampler(DDPMConfig(num_train_timesteps=cfg.num_train_timesteps))
+        self.init_ddpm_sampler(DDPMConfig(num_train_timesteps=cfg.num_train_timesteps))
 
         self.eta = EtaFixed(base_eta=1.0).to(self.device)
         for param in self.eta.parameters():
@@ -311,7 +303,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         flip_buffer('ddim_sqrt_one_minus_alphas', ddim_sqrt_one_minus_alphas)
         flip_buffer('ddim_sigmas', ddim_sigmas)
 
-    def _init_grpo(self, cfg: GRPOConfig):
+    def init_grpo(self, cfg: GRPOConfig):
         """Initializes components and hyperparameters for GRPO training."""
         self.denoised_clip_value = cfg.denoised_clip_value
         self.eval_randn_clip_value = cfg.eval_randn_clip_value
@@ -331,11 +323,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.kl_coef = float(cfg.kl_coef)
         self.bc_coeff = float(cfg.bc_coeff)
         self.sample_time = int(cfg.sample_time)
-        
-        self.metric_cache_loader = MetricCacheLoader(Path(cfg.metric_cache_path))
-        proposal_sampling = TrajectorySampling(time_horizon=4, interval_length=0.1)
-        self.simulator = PDMSimulator(proposal_sampling)
-        self.train_scorer = PDMScorer(proposal_sampling, cfg.scorer_config)
+        # (trajectories (N, T, 3), scene tokens) -> rewards (N,); set by the benchmark adapter.
+        self.reward_fn: Optional[Callable[[torch.Tensor, List[str]], torch.Tensor]] = None
         
         try:
             state_dict = torch.load(cfg.reference_policy_checkpoint, map_location="cpu")["state_dict"]
@@ -377,7 +366,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         betas_clipped = np.clip(betas, a_min=0, a_max=0.999)
         return torch.tensor(betas_clipped, dtype=dtype)
 
-    def extract(self, a: torch.Tensor, t: torch.Tensor, x_shape: tuple) -> torch.Tensor:
+    def extract(self, a: torch.Tensor, t: torch.Tensor, x_shape: tuple, dtype: Optional[torch.dtype] = None) -> torch.Tensor:
         """
         Extracts values from tensor `a` at indices `t` and reshapes them
         to be broadcastable with a tensor of shape `x_shape`.
@@ -386,7 +375,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if a.device != t.device:
             a = a.to(device=t.device)
         out = a.gather(-1, t)
-        target = next(self.parameters()).dtype
+        target = dtype or next(self.parameters()).dtype
         if out.dtype != target:
             out = out.to(target)
         return out.reshape(b, *((1,) * (len(x_shape) - 1)))
@@ -465,14 +454,17 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             conditioning_features=ego_status_features,
             timesteps=t
         )
-        pred_noise = self.action_decoder(model_output)
+        # Schedule arithmetic stays in fp32: in bf16, alphas close to 1 round to 1 and 1 - alpha becomes 0.
+        f32 = torch.float32
+        pred_noise = self.action_decoder(model_output).float()
+        x = x.float()
 
         if self.config.sampling_method == 'ddpm':
-            x_recon = self.extract(self.ddpm_sqrt_recip_alphas_cumprod, t, x.shape) * x - \
-                      self.extract(self.ddpm_sqrt_recipm1_alphas_cumprod, t, x.shape) * pred_noise
+            x_recon = self.extract(self.ddpm_sqrt_recip_alphas_cumprod, t, x.shape, f32) * x - \
+                      self.extract(self.ddpm_sqrt_recipm1_alphas_cumprod, t, x.shape, f32) * pred_noise
         elif self.config.sampling_method == 'ddim':
-            alpha_t = self.extract(self.ddim_alphas, index, x.shape)
-            sqrt_one_minus_alpha_t = self.extract(self.ddim_sqrt_one_minus_alphas, index, x.shape)
+            alpha_t = self.extract(self.ddim_alphas, index, x.shape, f32)
+            sqrt_one_minus_alpha_t = self.extract(self.ddim_sqrt_one_minus_alphas, index, x.shape, f32)
             x_recon = (x - sqrt_one_minus_alpha_t * pred_noise) / (alpha_t**0.5)
         else:
              raise ValueError(f"p_mean_variance not supported for method: {self.config.sampling_method}")
@@ -481,11 +473,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         x_recon.clamp_(-denoised_clip_value, denoised_clip_value)
 
         if self.config.sampling_method == 'ddpm':
-            model_mean = self.extract(self.ddpm_mu_coef1, t, x.shape) * x_recon + \
-                         self.extract(self.ddpm_mu_coef2, t, x.shape) * x
-            model_log_variance = self.extract(self.ddpm_logvar_clipped, t, x.shape)
+            model_mean = self.extract(self.ddpm_mu_coef1, t, x.shape, f32) * x_recon + \
+                         self.extract(self.ddpm_mu_coef2, t, x.shape, f32) * x
+            model_log_variance = self.extract(self.ddpm_logvar_clipped, t, x.shape, f32)
         elif self.config.sampling_method == 'ddim':
-            alpha_prev = self.extract(self.ddim_alphas_prev, index, x.shape)
+            alpha_prev = self.extract(self.ddim_alphas_prev, index, x.shape, f32)
             
             pred_noise = (x - (alpha_t**0.5) * x_recon) / sqrt_one_minus_alpha_t
 
@@ -494,22 +486,22 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 pred_noise.clamp_(-eps_clip_value, eps_clip_value)
 
             if deterministic:
-                etas = torch.zeros((x.shape[0], 1, 1)).to(x.device)
+                etas = torch.zeros((x.shape[0], 1, 1), device=x.device)
             else:
-                etas = self.eta(x).unsqueeze(1)
+                etas = self.eta(x).unsqueeze(1).float()
 
             sigma = (
                 etas
-                * ((1 - alpha_prev) / (1 - alpha_t) * (1 - alpha_t / alpha_prev)) ** 0.5
+                * ((1 - alpha_prev) / (1 - alpha_t) * (1 - alpha_t / alpha_prev)).clamp(min=0) ** 0.5
             ).clamp_(min=1e-10)
 
             pred_dir_xt = (1.0 - alpha_prev - sigma**2).clamp(min=0).sqrt() * pred_noise
             model_mean = (alpha_prev**0.5) * x_recon + pred_dir_xt
             model_log_variance = torch.log(sigma**2 + 1e-20)
 
-        return model_mean, model_log_variance, x_recon
+        return model_mean.to(model_dtype), model_log_variance.to(model_dtype), x_recon.to(model_dtype)
 
-    def _predict_flow(
+    def predict_flow(
         self,
         actions: torch.Tensor,
         t_batch: torch.Tensor,
@@ -536,7 +528,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         pred = self.action_decoder(model_output)
         return pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
 
-    def _flow_sde_step_with_logprob(
+    def flow_sde_step_with_logprob(
         self,
         sample: torch.Tensor,
         pred_flow: torch.Tensor,
@@ -709,11 +701,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             for step in range(self.config.num_inference_steps):
                 idx = int(step / self.config.num_inference_steps * self.config.flow_cfg.num_timestep_buckets)
                 t = torch.full((B,), idx, device=device, dtype=torch.long)
-                pred_flow = self._predict_flow(current_actions, t, vl_embeds, history_embeds, ego_embeds)
+                pred_flow = self.predict_flow(current_actions, t, vl_embeds, history_embeds, ego_embeds)
                 current_actions = current_actions + dt * pred_flow
 
         elif self.config.sampling_method == 'ddpm':
-            timesteps_to_iterate = self._ddpm_inference_timesteps()
+            timesteps_to_iterate = self.ddpm_inference_timesteps()
             for i, t_int in enumerate(timesteps_to_iterate):
                 t_batch = self.make_timesteps(B, t_int, device)
                 index_batch = self.make_timesteps(B, i, device)
@@ -826,7 +818,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             for step in range(self.config.num_inference_steps):
                 idx = int(step / self.config.num_inference_steps * self.config.flow_cfg.num_timestep_buckets)
                 t_batch = torch.full((B,), idx, device=device, dtype=torch.long)
-                pred_flow = self._predict_flow(
+                pred_flow = self.predict_flow(
                     current_actions, t_batch, vl_features, his_traj_features, ego_status_features
                 )
 
@@ -836,7 +828,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 else:
                     t_cont = torch.full((B,), step / self.config.num_inference_steps, device=device, dtype=torch.float32)
                     next_t_cont = torch.full((B,), (step + 1) / self.config.num_inference_steps, device=device, dtype=torch.float32)
-                    current_actions, log_prob, _, _ = self._flow_sde_step_with_logprob(
+                    current_actions, log_prob, _, _ = self.flow_sde_step_with_logprob(
                         current_actions,
                         pred_flow,
                         t_cont,
@@ -847,7 +839,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         elif self.config.sampling_method in ['ddpm', 'ddim']:
             if self.config.sampling_method == 'ddpm':
-                timesteps = self._ddpm_inference_timesteps()
+                timesteps = self.ddpm_inference_timesteps()
             else:
                 timesteps = self.ddim_t
             
@@ -942,14 +934,14 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             next_t_cont = next_t_single.repeat(B)
             t_batch = (t_cont * self.config.flow_cfg.num_timestep_buckets).long()
 
-            pred_flow = self._predict_flow(
+            pred_flow = self.predict_flow(
                 x_t,
                 t_batch,
                 batched_conditioning['vl_features'],
                 batched_conditioning['his_traj_features'],
                 batched_conditioning['ego_status_features'],
             )
-            _, log_prob, _, _ = self._flow_sde_step_with_logprob(
+            _, log_prob, _, _ = self.flow_sde_step_with_logprob(
                 x_t,
                 pred_flow,
                 t_cont,
@@ -967,7 +959,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             )
             indices_batch = indices_single.repeat(B)
         elif self.config.sampling_method == 'ddpm':
-            t_list = self._ddpm_inference_timesteps()[-num_denoising_steps:]
+            t_list = self.ddpm_inference_timesteps()[-num_denoising_steps:]
             t_single = torch.tensor(t_list, device=chains.device, dtype=torch.long)
             indices_batch = None
         else:
@@ -989,7 +981,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         
         return log_prob
 
-    def _flat_step_logprob(self, log_probs: torch.Tensor) -> torch.Tensor:
+    def flat_step_logprob(self, log_probs: torch.Tensor) -> torch.Tensor:
         log_probs = log_probs.clamp(min=-5, max=2)
         if self.config.sampling_method == "flow":
             return log_probs.reshape(-1)
@@ -1015,14 +1007,14 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             chains, trajs = self.sample_chain(
                 vl_rep, his_rep, status_rep, deterministic=False
             )
-            old_logprobs = self._flat_step_logprob(
+            old_logprobs = self.flat_step_logprob(
                 self.get_logprobs(vl_rep, his_rep, status_rep, chains, deterministic=False)
             )
 
         tokens_rep = [tok for tok in tokens_list for _ in range(G)]
-        unique_tokens = set(tokens_list)
-        metric_cache = {token: self.metric_cache_loader.get_from_token(token) for token in unique_tokens}
-        rewards = self.reward_fn(trajs, tokens_rep, metric_cache)
+        if self.reward_fn is None:
+            raise RuntimeError("GRPO needs planner.reward_fn; the benchmark adapter sets it")
+        rewards = self.reward_fn(trajs, tokens_rep).to(device=trajs.device, dtype=trajs.dtype).detach()
 
         rewards_matrix = rewards.view(B, G).float()
         mean_r = rewards_matrix.mean(dim=1, keepdim=True)
@@ -1047,7 +1039,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         ref_logprobs = None
         if self.kl_coef > 0:
             with torch.no_grad():
-                ref_logprobs = self._flat_step_logprob(
+                ref_logprobs = self.flat_step_logprob(
                     self.ref_policy.get_logprobs(vl_rep, his_rep, status_rep, chains, deterministic=False)
                 )
 
@@ -1073,7 +1065,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
     ) -> BatchFeature:
         """One inner update on a cached rollout. Trainer may call this μ times."""
         self.set_frozen_modules_to_eval_mode()
-        log_probs = self._flat_step_logprob(
+        log_probs = self.flat_step_logprob(
             self.get_logprobs(
                 rollout.vl_rep, rollout.his_rep, rollout.status_rep, rollout.chains, deterministic=False
             )
@@ -1149,90 +1141,18 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def norm_odo(self, trajectory: torch.Tensor) -> torch.Tensor:
         """Normalizes waypoint or delta actions to the range [-1, 1]."""
-        action_min, action_max = self._action_norm_bounds(trajectory.device, trajectory.dtype)
+        action_min, action_max = action_norm_bounds(self.config.training_target, trajectory.device, trajectory.dtype)
         return 2 * (trajectory - action_min) / (action_max - action_min) - 1
     
     def denorm_odo(self, normalized_trajectory: torch.Tensor) -> torch.Tensor:
         """Denormalizes sampled actions and returns waypoint trajectories."""
-        action_min, action_max = self._action_norm_bounds(
-            normalized_trajectory.device, normalized_trajectory.dtype
+        action_min, action_max = action_norm_bounds(
+            self.config.training_target, normalized_trajectory.device, normalized_trajectory.dtype
         )
         actions = (normalized_trajectory + 1) / 2 * (action_max - action_min) + action_min
         if self.config.training_target == "delta":
             return delta_to_waypoint(actions, self.config.delta_interval_length)
         return actions
-
-    def _action_norm_bounds(self, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.config.training_target == "waypoint":
-            action_min = WAYPOINT_NORM_MIN
-            action_max = WAYPOINT_NORM_MAX
-        else:
-            action_min = DELTA_NORM_MIN
-            action_max = DELTA_NORM_MAX
-
-        action_min_tensor = torch.tensor(action_min, device=device, dtype=dtype).view(1, 1, -1)
-        action_max_tensor = torch.tensor(action_max, device=device, dtype=dtype).view(1, 1, -1)
-        if torch.any(action_max_tensor <= action_min_tensor):
-            raise ValueError("All action norm max values must be greater than min values.")
-        return action_min_tensor, action_max_tensor
-
-    def reward_fn(
-        self,
-        pred_traj: torch.Tensor,
-        tokens_list,
-        cache_dict,
-    ) -> torch.Tensor:
-        """Calculates PDM scores for a batch of predicted trajectories."""
-        pred_np = pred_traj.detach().cpu().numpy()
-        groups: Dict[Any, list] = {}
-        for i, token in enumerate(tokens_list):
-            groups.setdefault(token, []).append(i)
-
-        reward_np = [0.0] * len(tokens_list)
-        jobs = []
-        for token, idxs in groups.items():
-            jobs.append((token, idxs, [Trajectory(pred_np[i]) for i in idxs]))
-
-        # ponytail: 4 tokens 上线程比串行 batch 慢；token 多再开
-        if len(jobs) >= 8:
-            try:
-                scores_by_token = self._reward_jobs_threads(jobs, cache_dict)
-            except Exception:
-                scores_by_token = None
-        else:
-            scores_by_token = None
-        if scores_by_token is None:
-            scores_by_token = {
-                token: pdm_pred_scores(
-                    metric_cache=cache_dict[token],
-                    model_trajectories=trajs,
-                    future_sampling=self.simulator.proposal_sampling,
-                    simulator=self.simulator,
-                    scorer=self.train_scorer,
-                )
-                for token, _, trajs in jobs
-            }
-
-        for token, idxs, _ in jobs:
-            for i, score in zip(idxs, scores_by_token[token]):
-                reward_np[i] = score
-        return torch.tensor(reward_np, device=pred_traj.device, dtype=pred_traj.dtype).detach()
-
-    def _reward_jobs_threads(self, jobs, cache_dict):
-        from concurrent.futures import ThreadPoolExecutor
-
-        sampling = self.simulator.proposal_sampling
-        scorer_cfg = self.train_scorer._config
-
-        def _run(job):
-            token, _, trajs = job
-            # ponytail: sim/scorer mutate; one instance per thread
-            sim = PDMSimulator(sampling)
-            scorer = PDMScorer(sampling, scorer_cfg)
-            return token, pdm_pred_scores(cache_dict[token], trajs, sampling, sim, scorer)
-
-        with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
-            return dict(pool.map(_run, jobs))
 
     @property
     def device(self):
@@ -1269,3 +1189,71 @@ class EtaFixed(nn.Module):
 
         eta = 0.5 * (eta_normalized + 1) * (self.max - self.min) + self.min
         return torch.full((B, 1), eta.item()).to(device)
+
+
+def make_recogdrive_config(
+    size: str,
+    *,
+    action_dim: int,
+    action_horizon: int,
+    input_embedding_dim: int,
+    sampling_method: str = 'ddim',
+    num_inference_steps: int = 5,
+    grpo: bool = False,
+    model_dtype: str = "float16",
+    training_target: str = "waypoint",
+    delta_interval_length: float = 0.5,
+    vlm_hidden_size: Optional[int] = None,
+) -> ReCogDriveDiffusionPlannerConfig:
+    """
+    A factory function to create a ReCogDriveDiffusionPlannerConfig object.
+
+    This function simplifies configuration by using a size preset ("small",
+    "large", "large_new") to define the core DiT architecture, while allowing
+    other important planner settings to be specified.
+
+    Args:
+        size (str): The size preset for the DiT backbone.
+        action_dim (int): The dimension of the action space.
+        action_horizon (int): The number of future action steps to predict.
+        input_embedding_dim (int): Dimension of the input embeddings to the DiT.
+        sampling_method (str): The core training and sampling methodology.
+        num_inference_steps (int): Number of steps for inference sampling.
+        grpo (bool): If True, enables GRPO-specific logic.
+        model_dtype (str): The data type for model computations.
+        training_target (str): Train the planner on 'waypoint' poses or 'delta' velocities.
+
+    Returns:
+        ReCogDriveDiffusionPlannerConfig: An instantiated and configured planner config object.
+    """
+    size = size.lower()
+    if size == "small":
+        diffusion_model_cfg = {"num_heads": 8, "head_dim": 48, "num_layers": 16,"output_dim":512}
+    elif size == "large":
+        diffusion_model_cfg = {"num_heads": 32, "head_dim": 48, "num_layers": 16,"output_dim":1536}
+    else:
+        raise ValueError(f"Unknown model size: {size!r}")
+
+    common_params: Dict[str, any] = {
+        "dropout": 0.0,
+        "attention_bias": True,
+        "norm_eps": 1e-5,
+        "interleave_attention": True,
+    }
+    diffusion_model_cfg.update(common_params)
+
+    config = ReCogDriveDiffusionPlannerConfig(
+        diffusion_model_cfg=diffusion_model_cfg,
+        action_dim=action_dim,
+        action_horizon=action_horizon,
+        input_embedding_dim=input_embedding_dim,
+        sampling_method=sampling_method,
+        num_inference_steps=num_inference_steps,
+        grpo=grpo,
+        model_dtype=model_dtype,
+        training_target=validate_training_target(training_target),
+        delta_interval_length=delta_interval_length,
+        vlm_hidden_size=vlm_hidden_size,
+    )
+    
+    return config

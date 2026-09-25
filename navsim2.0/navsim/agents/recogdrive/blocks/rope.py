@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from typing import Tuple
+from typing import Optional, Tuple
 
 class RotaryEmbedding(nn.Module):
     """
@@ -35,9 +35,9 @@ class RotaryEmbedding(nn.Module):
         )
         self.register_buffer("inv_freq", inv_freq)
 
-        self._set_cos_sin_cache(max_position_embeddings, self.inv_freq.device)
+        self.set_cos_sin_cache(max_position_embeddings, self.inv_freq.device)
 
-    def _set_cos_sin_cache(self, seq_len: int, device: torch.device):
+    def set_cos_sin_cache(self, seq_len: int, device: torch.device):
         """
         Updates the sine and cosine cache.
 
@@ -60,6 +60,7 @@ class RotaryEmbedding(nn.Module):
         self,
         x: torch.Tensor,
         position_ids: torch.LongTensor,
+        seq_len: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generates rotary embeddings for the given positions.
@@ -73,9 +74,11 @@ class RotaryEmbedding(nn.Module):
             Tuple[torch.Tensor, torch.Tensor]: A tuple containing the cosine and
                 sine embeddings. Shape of each: (batch_size, 1, sequence_length, dim).
         """
-        seq_len = position_ids.max().item() + 1
+        if seq_len is None:
+            # Syncs the GPU; callers that know max(position_ids) + 1 on the host pass it as seq_len.
+            seq_len = position_ids.max().item() + 1
         if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(seq_len=seq_len, device=x.device)
+            self.set_cos_sin_cache(seq_len=seq_len, device=x.device)
 
         cos = self.cos_cached.gather(
             2, position_ids.unsqueeze(1).unsqueeze(3).expand(-1, -1, -1, self.dim)

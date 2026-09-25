@@ -135,9 +135,9 @@ class StateAttentionEncoder(nn.Module):
         self.pos_embed = nn.Parameter(torch.Tensor(1, state_dim, embed_dim))
         self.query = nn.Parameter(torch.Tensor(1, 1, embed_dim))
 
-        self._initialize_weights()
+        self.initialize_weights()
 
-    def _initialize_weights(self):
+    def initialize_weights(self):
         """Initializes learnable embeddings."""
         nn.init.normal_(self.pos_embed, std=0.02)
         nn.init.normal_(self.query, std=0.02)

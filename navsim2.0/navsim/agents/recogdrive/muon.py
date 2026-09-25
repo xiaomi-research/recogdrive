@@ -60,12 +60,12 @@ class Muon(Optimizer):
                 if weight_decay:
                     param.mul_(1.0 - lr * weight_decay)
                 if param.ndim >= 2:
-                    self._muon_update(param, grad, group)
+                    self.muon_update(param, grad, group)
                 else:
-                    self._adamw_update(param, grad, group)
+                    self.adamw_update(param, grad, group)
         return loss
 
-    def _muon_update(self, param: torch.Tensor, grad: torch.Tensor, group: dict) -> None:
+    def muon_update(self, param: torch.Tensor, grad: torch.Tensor, group: dict) -> None:
         state = self.state[param]
         if "momentum_buffer" not in state:
             state["momentum_buffer"] = torch.zeros_like(grad)
@@ -76,7 +76,7 @@ class Muon(Optimizer):
         scale = max(1.0, param.size(-2) / param.size(-1)) ** 0.5
         param.add_(update, alpha=-group["lr"] * scale)
 
-    def _adamw_update(self, param: torch.Tensor, grad: torch.Tensor, group: dict) -> None:
+    def adamw_update(self, param: torch.Tensor, grad: torch.Tensor, group: dict) -> None:
         state = self.state[param]
         if "exp_avg" not in state:
             state["exp_avg"] = torch.zeros_like(grad)
@@ -90,22 +90,3 @@ class Muon(Optimizer):
         bias2 = 1.0 - beta2 ** state["step"]
         denom = state["exp_avg_sq"].sqrt().div_(bias2 ** 0.5).add_(group["adamw_eps"])
         param.addcdiv_(state["exp_avg"] / bias1, denom, value=-group["lr"])
-
-
-def reject_deepspeed_owned_optimizer(ds_cfg: dict) -> None:
-    """Muon+DS uses the client optimizer. DS must not spawn AdamW."""
-    if ds_cfg and "optimizer" in ds_cfg:
-        raise ValueError(
-            "DeepSpeed config sets optimizer=...; Muon+DS forbids a DS-owned AdamW. "
-            "Remove deepspeed.optimizer so Accelerate keeps navsim.agents.recogdrive.muon.Muon."
-        )
-
-
-def client_optimizer_name(optimizer: object) -> str:
-    inner = optimizer
-    for _ in range(4):
-        nested = getattr(inner, "optimizer", None)
-        if nested is None or nested is inner:
-            break
-        inner = nested
-    return type(inner).__name__

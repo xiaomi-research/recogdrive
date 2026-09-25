@@ -60,24 +60,39 @@ sh training/run_recogdrive_train_multi_node_2b.sh agent.training_target=delta
 
 The training cache always stores waypoint targets. In delta mode, targets are converted after loading the cache, so waypoint and delta training can share the same `CACHE_PATH`. Delta targets are per-step trajectory velocities computed from NAVSIM waypoints. The delta normalization constants are built into the planner and were recomputed from `Navsim_Traj/dataset_navsim_traj.jsonl` in [ReCogDrive_Pretraining](https://huggingface.co/datasets/owl10/ReCogDrive_Pretraining/tree/main/Navsim_Traj), so you do not need to pass `delta_norm_min` or `delta_norm_max`.
 
-For accelerate training, we provide eight entry scripts covering pretrained VLM family, target type, and training stage:
+The `recogdrive` trainer (FSDP2, torchrun) has eight entry scripts covering pretrained VLM family, target type, and training stage:
 
 | VLM | Target | Stage | Script |
 | :---: | :---: | :---: | :--- |
-| InternVL3 | waypoint | IL | `scripts/training_accelerate/run_recogdrive_internvl3_waypoint_il.sh` |
-| InternVL3 | waypoint | RL | `scripts/training_accelerate/run_recogdrive_internvl3_waypoint_rl.sh` |
-| InternVL3 | delta | IL | `scripts/training_accelerate/run_recogdrive_internvl3_delta_il.sh` |
-| InternVL3 | delta | RL | `scripts/training_accelerate/run_recogdrive_internvl3_delta_rl.sh` |
-| QwenVL3 | waypoint | IL | `scripts/training_accelerate/run_recogdrive_qwenvl3_waypoint_il.sh` |
-| QwenVL3 | waypoint | RL | `scripts/training_accelerate/run_recogdrive_qwenvl3_waypoint_rl.sh` |
-| QwenVL3 | delta | IL | `scripts/training_accelerate/run_recogdrive_qwenvl3_delta_il.sh` |
-| QwenVL3 | delta | RL | `scripts/training_accelerate/run_recogdrive_qwenvl3_delta_rl.sh` |
+| InternVL3 | waypoint | IL | `scripts/train/run_recogdrive_internvl3_waypoint_il.sh` |
+| InternVL3 | waypoint | RL | `scripts/train/run_recogdrive_internvl3_waypoint_rl.sh` |
+| InternVL3 | delta | IL | `scripts/train/run_recogdrive_internvl3_delta_il.sh` |
+| InternVL3 | delta | RL | `scripts/train/run_recogdrive_internvl3_delta_rl.sh` |
+| QwenVL3 | waypoint | IL | `scripts/train/run_recogdrive_qwenvl3_waypoint_il.sh` |
+| QwenVL3 | waypoint | RL | `scripts/train/run_recogdrive_qwenvl3_waypoint_rl.sh` |
+| QwenVL3 | delta | IL | `scripts/train/run_recogdrive_qwenvl3_delta_il.sh` |
+| QwenVL3 | delta | RL | `scripts/train/run_recogdrive_qwenvl3_delta_rl.sh` |
 
-These wrappers call `scripts/training_accelerate/run_recogdrive_accel_variant.sh`. Override paths with environment variables such as `VLM_PATH`, `CACHE_PATH`, `CHECKPOINT`, and `METRIC_CACHE_PATH`.
+These wrappers call `scripts/train/run_recogdrive_train.sh`. Override paths with environment variables such as `VLM_PATH`, `CACHE_PATH`, `CHECKPOINT`, and `METRIC_CACHE_PATH`; any extra arguments are passed to Hydra, for example:
+
+```bash
+sh scripts/train/run_recogdrive_internvl3_waypoint_il.sh \
+  train.activation_checkpointing=[LightningDiTBlock] \
+  evaluator.name=navsim evaluator.metric_cache_path=/path/to/metric_cache
+```
+
+The `train.*` block of `default_training.yaml` sets parallelism and precision (`strategy`, `precision`, `reshard_after_forward`, `hsdp_shard_size`, `replicate_frozen`, `compile`, `resume`). `data_loader` picks a registered dataset loader (`navsim`, `waymoe2e`, `nuscenes`); a new dataset registers a loader in `recogdrive/data/` and returns `(features, targets, token)` samples. The full ReCogDrive model is kept in three places with identical code apart from import lines: `recogdrive/models/recogdrive/` + `recogdrive/adapters/navsim/` (used by the training launchers via `agent._target_`), and `navsim1.1/navsim/agents/recogdrive/` and `navsim2.0/navsim/agents/recogdrive/` (used by the NAVSIM evaluation scripts through `agent=recogdrive_agent`). Change all three together; checkpoints load in either. The agent's `worker_transform()` (prompt, image path, InternVL tiles) runs in the dataloader workers for every data loader. `evaluator.*` scores checkpoints with the NAVSIM tree's own PDMS/EPDMS entry in a separate process. The training log reports `step_ms`, `data_wait_ms`, and `samples/s`.
 
 ### WaymoE2E Stage 2 / Stage 3 Training
 
-Following the RAP-style WaymoE2E cache format, ReCogDrive can train from cached samples without porting the full raw Waymo parser into this repository. The cache must be generated with the ReCogDrive agent feature/target builders, because the trainer expects keys such as `history_trajectory`, `high_command_one_hot`, `status_feature`, and `last_hidden_state`. The expected cache layout is:
+Build the cache from the raw WOD-E2E TFRecords (front camera center-cropped to NAVSIM's 16:9 so the VLM prompt keeps its 9-patch budget, 0.5 s history/target spacing in the current ego frame, intent as the driving command):
+
+```bash
+PYTHONPATH=navsim1.1:. python -m recogdrive.data.waymoe2e --out ${WAYMOE2E_CACHE_PATH} --split training /path/to/wod_e2e/training_*.tfrecord-*
+PYTHONPATH=navsim1.1:. python -m recogdrive.data.waymoe2e --out ${WAYMOE2E_CACHE_PATH} --split val /path/to/wod_e2e/val_*.tfrecord-*
+```
+
+The resulting layout (RAP-style caches with the same keys also work):
 
 ```text
 ${WAYMOE2E_CACHE_PATH}/training/<token>/features.gz
@@ -91,7 +106,7 @@ Run WaymoE2E stage 2 imitation learning:
 ```bash
 WAYMOE2E_CACHE_PATH=/path/to/waymoe2e_recogdrive_cache \
 VLM_PATH=/path/to/internvl3_or_qwenvl3 \
-sh scripts/training_accelerate/run_recogdrive_waymoe2e_stage2_il.sh
+sh scripts/train/run_recogdrive_waymoe2e_stage2_il.sh
 ```
 
 Run WaymoE2E stage 3 RL from the stage 2 checkpoint:
@@ -101,7 +116,7 @@ WAYMOE2E_CACHE_PATH=/path/to/waymoe2e_recogdrive_cache \
 CHECKPOINT=/path/to/waymoe2e_stage2_il.ckpt \
 METRIC_CACHE_PATH=/path/to/waymoe2e_metric_cache \
 VLM_PATH=/path/to/internvl3_or_qwenvl3 \
-sh scripts/training_accelerate/run_recogdrive_waymoe2e_stage3_rl.sh
+sh scripts/train/run_recogdrive_waymoe2e_stage3_rl.sh
 ```
 
 The stage 3 script reuses the existing ReCogDrive RL/PDM reward path. Therefore `METRIC_CACHE_PATH` must contain metric cache metadata and token names compatible with the WaymoE2E cache tokens. You can override `MODEL_FAMILY=qwenvl3`, `TRAINING_TARGET=delta`, `WAYMOE2E_TRAIN_SPLIT`, and `WAYMOE2E_VAL_SPLIT` when needed.

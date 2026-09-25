@@ -123,14 +123,14 @@ class RecogDriveBackbone(nn.Module):
                 use_flash_attn=False,
                 device_map=self.device
             ).eval()
-            self._enable_sdpa()
+            self.enable_sdpa()
             self.tokenizer = AutoTokenizer.from_pretrained(
                 checkpoint_path,
                 trust_remote_code=True,
                 use_fast=False
             )
             # Load model-specific configuration
-            self._configure_internvl()
+            self.configure_internvl()
             self.num_image_token = 256
 
         elif self.model_type == 'qwen':
@@ -152,7 +152,7 @@ class RecogDriveBackbone(nn.Module):
 
         print(f"Backbone '{self.model_type}' loaded successfully on device '{self.device}'.")
 
-    def _enable_sdpa(self):
+    def enable_sdpa(self):
         # official InternVL flash-attn path: 1487ms vs SDPA 715ms on 3090, same tokens
         if torch.cuda.is_available():
             torch.backends.cuda.enable_flash_sdp(True)
@@ -161,7 +161,7 @@ class RecogDriveBackbone(nn.Module):
         if language_model is not None and hasattr(language_model, "set_attn_implementation"):
             language_model.set_attn_implementation("sdpa")
 
-        def _sdpa_attn(module, x):
+        def sdpa_attn(module, x):
             bsz, seqlen, width = x.shape
             qkv = module.qkv(x).reshape(bsz, seqlen, 3, module.num_heads, width // module.num_heads)
             qkv = qkv.permute(2, 0, 3, 1, 4)
@@ -176,10 +176,10 @@ class RecogDriveBackbone(nn.Module):
 
         for module in self.model.modules():
             if module.__class__.__name__ == "InternAttention":
-                module._naive_attn = types.MethodType(_sdpa_attn, module)
+                module._naive_attn = types.MethodType(sdpa_attn, module)
         print("Backbone attention: sdpa")
 
-    def _configure_internvl(self):
+    def configure_internvl(self):
         """Applies specific configurations required for the InternVL model."""
         self.model.system_message = system_message
         self.img_context_token_id = self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
@@ -190,7 +190,7 @@ class RecogDriveBackbone(nn.Module):
         if not self.model:
             raise RuntimeError("Backbone model has not been initialized. Call initialize() on the agent first.")
         if self.model_type == "qwen":
-            return self._forward_qwen(pixel_values, questions)
+            return self.forward_qwen(pixel_values, questions)
         
         model_dtype = next(self.model.parameters()).dtype
 
@@ -210,10 +210,15 @@ class RecogDriveBackbone(nn.Module):
             query = query.replace('<image>', image_tokens, 1)
             queries.append(query)
         self.tokenizer.padding_side = 'left'
-        model_inputs = self.tokenizer(queries, return_tensors='pt', padding='max_length', max_length=2800)
+        model_inputs = self.tokenizer(queries, padding='max_length', max_length=2800)
+        longest = max(map(len, model_inputs['input_ids']))
+        if longest > 2800:
+            raise ValueError(f"VLM prompt has {longest} tokens > max_length 2800 "
+                             f"(images tiled into up to {max(num_patches_list)} patches)")
         device = torch.device(self.device)
-        input_ids = model_inputs['input_ids'].to(device)
-        attention_mask = model_inputs['attention_mask'].to(device)
+        pin = device.type == "cuda"
+        input_ids = torch.tensor(model_inputs['input_ids'], pin_memory=pin).to(device, non_blocking=True)
+        attention_mask = torch.tensor(model_inputs['attention_mask'], pin_memory=pin).to(device, non_blocking=True)
 
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
@@ -231,7 +236,7 @@ class RecogDriveBackbone(nn.Module):
                 return_dict=True,
         )
 
-    def _forward_qwen(self, image_paths: Union[torch.Tensor, List[str]], questions: List[str]):
+    def forward_qwen(self, image_paths: Union[torch.Tensor, List[str]], questions: List[str]):
         if process_vision_info is None:
             raise ImportError("qwen_vl_utils is required for Qwen-VL preprocessing.")
         if not isinstance(image_paths, list):

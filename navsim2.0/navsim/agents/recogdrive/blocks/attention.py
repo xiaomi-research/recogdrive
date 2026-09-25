@@ -65,7 +65,7 @@ class Attention(nn.Module):
         
         if rotary_embedder is not None:
             position_ids = torch.arange(N_q, device=hidden_states.device).unsqueeze(0)
-            cos, sin = rotary_embedder(hidden_states, position_ids)
+            cos, sin = rotary_embedder(hidden_states, position_ids, seq_len=N_q)
             q = (q * cos) + (rotate_half(q) * sin)
             
             if is_self_attention:

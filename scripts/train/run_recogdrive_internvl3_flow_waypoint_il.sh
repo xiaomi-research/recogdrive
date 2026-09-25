@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODEL_FAMILY=internvl3 TRAINING_TARGET=waypoint TRAIN_STAGE=il SAMPLING_METHOD=flow \
+  bash "${SCRIPT_DIR}/run_recogdrive_train.sh" "$@"

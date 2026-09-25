@@ -191,9 +191,9 @@ class LightningDiT(nn.Module):
                                            
         self.final_layer = FinalLayer(self.inner_dim, output_dim)
 
-        self._initialize_weights()
+        self.initialize_weights()
 
-    def _initialize_weights(self) -> None:
+    def initialize_weights(self) -> None:
         """
         Initializes weights for stable training.
         - Initializes positional embeddings with sine/cosine values.
