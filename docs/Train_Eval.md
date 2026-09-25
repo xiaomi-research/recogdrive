@@ -28,6 +28,21 @@ cd /path/to/internvl_chat
 sh ./shell/internvl3.0/2nd_finetune/internvl3_8b_dynamic_res_2nd_finetune_recogdrive_pretrain.sh
 ```
 
+### Driving VQA evaluation (DriveLM, LingoQA, DriveBench)
+
+`recogdrive/eval/vqa` answers the questions with lmdeploy (one worker per visible GPU, resumable) and writes the benchmark's prediction files plus `score.json`. It needs `pip install lmdeploy`; DriveBench language metrics also need `language-evaluation`, and `--gpt` reads `OPENAI_API_KEY`. The default TurboMind engine matches the reported numbers; `--backend pytorch` runs lmdeploy's PyTorch engine where the TurboMind build does not match the installed torch.
+
+```bash
+# DriveLM: output.json and submission.json for the DriveLM server
+python -m recogdrive.eval.vqa drivelm --model /path/to/vlm --data v1_1_val_nus_q_only.json --image-root /path/to/nuscenes --out out/drivelm
+# LingoQA: Lingo-Judge accuracy
+python -m recogdrive.eval.vqa lingoqa --model /path/to/vlm --data /path/to/LingoQA/val.parquet --image-root /path/to/LingoQA/images/val --out out/lingoqa
+# DriveBench: clean or --corruption Fog / NoImage / ...
+python -m recogdrive.eval.vqa drivebench --model /path/to/vlm --data drivebench-test-final.json --image-root /path/to/toolkit --out out/drivebench
+```
+
+The same benchmarks run as training evaluators, e.g. `evaluator.name=lingoqa evaluator.vqa.data=... evaluator.vqa.image_root=...`; they score the `*_vlm` export when the backbone is trained, otherwise `agent.vlm_path`.
+
 
 ## Stage 2: Diffusion Planner Imitation Learning
 
@@ -121,10 +136,10 @@ sh scripts/train/run_recogdrive_waymoe2e_stage3_rl.sh
 
 The stage 3 script reuses the existing ReCogDrive RL/PDM reward path. Therefore `METRIC_CACHE_PATH` must contain metric cache metadata and token names compatible with the WaymoE2E cache tokens. You can override `MODEL_FAMILY=qwenvl3`, `TRAINING_TARGET=delta`, `WAYMOE2E_TRAIN_SPLIT`, and `WAYMOE2E_VAL_SPLIT` when needed.
 
-You can also enable **EMA (Exponential Moving Average)** during training for faster convergence. Note that this may lead to very slight performance degradation.
+You can also enable **EMA (Exponential Moving Average)** during training for faster convergence. Note that this may lead to very slight performance degradation. Validation then runs on the averaged weights, every checkpoint gets an `*-EMA.ckpt` twin, evaluators score the EMA twin, and the average is part of the resume state.
 
 ```bash
-sh training/run_recogdrive_train_multi_node_ema_2b.sh
+sh scripts/train/run_recogdrive_internvl3_waypoint_il.sh train.ema_decay=0.999
 ```
 
 ### Step 3: Configure and Run Evaluation

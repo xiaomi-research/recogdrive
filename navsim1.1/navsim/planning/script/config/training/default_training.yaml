@@ -44,6 +44,7 @@ train:
   resume: false
   async_save: true
   top_k: 5
+  ema_decay: 0.0  # e.g. 0.999: validate, export (*-EMA.ckpt) and evaluate the moving average of trainable weights
 
 evaluator:
   name: null  # navsim
@@ -54,6 +55,14 @@ evaluator:
   gpus: null  # CUDA_VISIBLE_DEVICES of the eval job; during training point it at GPUs training does not use
   nproc: null
   overrides: []
+  vqa:  # drivelm / lingoqa / drivebench, run by python -m recogdrive.eval.vqa
+    data: null  # DriveLM / DriveBench question json, LingoQA val.parquet
+    image_root: null
+    judge: wayveai/Lingo-Judge  # LingoQA
+    corruption: ''  # DriveBench, e.g. Fog or NoImage
+    gpt: false  # DriveBench GPT score, reads OPENAI_API_KEY
+    batch_size: null
+    backend: turbomind  # lmdeploy engine: turbomind (reported numbers) | pytorch
 
 dataloader:
   params:

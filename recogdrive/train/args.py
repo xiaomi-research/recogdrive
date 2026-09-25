@@ -25,6 +25,7 @@ class TrainArgs:
     top_k: int = 5
     grad_accum: int = 1
     grad_clip: float = 0.0
+    ema_decay: float = 0.0                      # 0: off; e.g. 0.999 validates and exports the averaged weights too
     max_epochs: int = 10
     max_steps: int = 0
     val_every_n_epochs: int = 1
@@ -66,5 +67,7 @@ class TrainArgs:
             raise ValueError(f"world size {world_size} is not divisible by train.hsdp_shard_size {self.hsdp_shard_size}")
         if self.grad_accum < 1:
             raise ValueError("gradient accumulation must be >= 1")
+        if not 0.0 <= self.ema_decay < 1.0:
+            raise ValueError(f"train.ema_decay must be in [0, 1), got {self.ema_decay}")
         if self.log_every < 1:
             raise ValueError("train.log_every must be >= 1")

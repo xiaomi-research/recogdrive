@@ -1,5 +1,6 @@
 """Training loop for VLA agents. Parallelism, data pipelines and evaluators are plugged in."""
 
+import contextlib
 import json
 import logging
 import math
@@ -16,12 +17,14 @@ from recogdrive.data import DevicePrefetcher, build_split, loader_name, make_loa
 from recogdrive.distributed import DistributedContext, ResumeCheckpointer, export_model_state, gradient_sync, parallelize
 from recogdrive.eval import build_evaluator
 from recogdrive.train.args import TrainArgs
+from recogdrive.train.ema import EMA
 
 logger = logging.getLogger("recogdrive")
 
 EXTRA_METRICS = ("reward", "policy_loss", "bc_loss", "clip_frac", "ratio_mean")
 BACKBONE_PREFIX = "backbone."
 VLM_PREFIX = "backbone.model."
+EMA_SUFFIX = "-EMA"
 
 
 class Trainer:
@@ -47,6 +50,7 @@ class Trainer:
         self.train_loader = None
         self.val_loader = None
         self.clip_params = []
+        self.ema = None
         self.global_batch = 0
         self.checkpointer = ResumeCheckpointer(self.output_dir / "checkpoints", self.ctx, self.args.async_save)
         self.evaluator = build_evaluator(cfg, self.output_dir) if self.ctx.is_main else None
@@ -61,6 +65,10 @@ class Trainer:
             self.agent.initialize()
         self.model = parallelize(self.agent, self.args, self.ctx)
         self.build_optimizer()
+        if self.args.ema_decay > 0:
+            self.ema = EMA(self.agent, self.args.ema_decay)
+            if self.ctx.is_main:
+                logger.info("ema decay=%s over %d trainable tensors", self.args.ema_decay, len(self.ema.params))
         if self.args.resume:
             self.resume()
         try:
@@ -107,7 +115,7 @@ class Trainer:
             if self.ctx.is_main:
                 logger.info("resume: no checkpoint under %s, starting fresh", self.checkpointer.root)
             return
-        extra = self.checkpointer.load(path, self.model, self.optimizer)
+        extra = self.checkpointer.load(path, self.model, self.optimizer, self.ema)
         self.start_epoch = int(extra["epoch"])
         self.global_step = int(extra["global_step"])
         self.best_val = float(extra["best_val"])
@@ -150,6 +158,8 @@ class Trainer:
                         grad_norm = torch.nn.utils.clip_grad_norm_(self.clip_params, args.grad_clip, foreach=True)
                     self.optimizer.step()
                     self.optimizer.zero_grad(set_to_none=True)
+                    if self.ema is not None:
+                        self.ema.update()
                     self.global_step += 1
                     if self.global_step % args.log_every == 0:
                         self.log_train(epoch, out, loss, grad_norm, window, batches)
@@ -199,16 +209,24 @@ class Trainer:
             self.global_batch * steps / max(elapsed, 1e-9),
         )
 
+    def averaged(self):
+        """Context in which the model holds its EMA weights (a no-op without EMA)."""
+        return self.ema.swapped() if self.ema is not None else contextlib.nullcontext()
+
+    def ckpt_suffixes(self):
+        return ["", EMA_SUFFIX] if self.ema is not None else [""]
+
     @torch.no_grad()
     def validate(self, use_grpo: bool) -> float:
         self.model.eval()
         device = self.ctx.device
         total = torch.zeros((), device=device)
         count = 0
-        for features, targets, tokens in DevicePrefetcher(self.val_loader, device):
-            preds = self.model(features, targets) if use_grpo else self.model(features, targets, tokens)
-            total += self.agent.compute_loss(features, targets, preds).detach().float()
-            count += 1
+        with self.averaged():
+            for features, targets, tokens in DevicePrefetcher(self.val_loader, device):
+                preds = self.model(features, targets) if use_grpo else self.model(features, targets, tokens)
+                total += self.agent.compute_loss(features, targets, preds).detach().float()
+                count += 1
         sums = self.ctx.all_reduce_sum(torch.stack([total, torch.tensor(float(count), device=device)]))
         return (sums[0] / sums[1].clamp(min=1.0)).item()
 
@@ -223,32 +241,42 @@ class Trainer:
         self.save_resume(epoch + 1)
 
     def export(self, epoch: int, train_loss: float, val_loss: Optional[float], improved: bool) -> None:
-        state = export_model_state(self.model)
+        """Writes last.ckpt (and last-EMA.ckpt), then the top-k and best copies; evaluators get the EMA ones."""
+        suffixes = self.ckpt_suffixes()
+        for suffix in suffixes:
+            with self.averaged() if suffix else contextlib.nullcontext():
+                state = export_model_state(self.model)
+            if self.ctx.is_main:
+                self.write_ckpt(state, self.output_dir / f"last{suffix}.ckpt")
         if not self.ctx.is_main:
             return
-        weights = {k: v for k, v in state.items() if not k.startswith(BACKBONE_PREFIX)}
-        vlm = {k[len(VLM_PREFIX):]: v for k, v in state.items() if k.startswith(VLM_PREFIX)}
-        last = self.output_dir / "last.ckpt"
-        torch.save({"state_dict": weights}, last)
-        self.save_vlm(vlm, last)
         logger.info(
             "epoch %d/%d train/loss=%.4f val/loss=%s -> %s",
             epoch + 1, self.args.max_epochs, train_loss,
-            "skipped" if val_loss is None else f"{val_loss:.4f}", last,
+            "skipped" if val_loss is None else f"{val_loss:.4f}", self.output_dir / "last.ckpt",
         )
         if val_loss is None:
             return
-        tagged = self.output_dir / f"epoch_{epoch + 1:04d}_val_{val_loss:.6f}.ckpt"
-        self.copy_ckpt(last, tagged)
-        self.prune_topk(val_loss, tagged.name)
+        tag = f"epoch_{epoch + 1:04d}_val_{val_loss:.6f}"
+        for suffix in suffixes:
+            last = self.output_dir / f"last{suffix}.ckpt"
+            self.copy_ckpt(last, self.output_dir / f"{tag}{suffix}.ckpt")
+            if improved:
+                self.copy_ckpt(last, self.output_dir / f"best{suffix}.ckpt")
+        self.prune_topk(val_loss, f"{tag}.ckpt")
         if improved:
-            self.copy_ckpt(last, self.output_dir / "best.ckpt")
             logger.info("new best val/loss=%.6f", val_loss)
         if self.evaluator is not None:
-            for tag, result in self.evaluator.poll():
-                logger.info("eval %s: %s", tag, result)
+            for name, result in self.evaluator.poll():
+                logger.info("eval %s: %s", name, result)
             if self.evaluator.every_n_epochs and (epoch + 1) % self.evaluator.every_n_epochs == 0:
-                self.evaluator.submit(tagged, f"epoch_{epoch + 1:04d}")
+                self.evaluator.submit(self.output_dir / f"{tag}{suffixes[-1]}.ckpt", f"epoch_{epoch + 1:04d}")
+
+    def write_ckpt(self, state: dict, path: Path) -> None:
+        weights = {k: v for k, v in state.items() if not k.startswith(BACKBONE_PREFIX)}
+        vlm = {k[len(VLM_PREFIX):]: v for k, v in state.items() if k.startswith(VLM_PREFIX)}
+        torch.save({"state_dict": weights}, path)
+        self.save_vlm(vlm, path)
 
     def save_vlm(self, vlm_state: dict, ckpt: Path) -> None:
         if not vlm_state:
@@ -277,6 +305,7 @@ class Trainer:
         best.append({"path": name, "val_loss": float(val_loss)})
         best = sorted(best, key=lambda item: item["val_loss"])[: self.args.top_k]
         keep = {item["path"] for item in best}
+        keep |= {Path(name).stem + EMA_SUFFIX + ".ckpt" for name in keep}
         for path in self.output_dir.glob("epoch_*.ckpt"):
             if path.name not in keep:
                 path.unlink(missing_ok=True)
@@ -290,13 +319,14 @@ class Trainer:
             "best_val": self.best_val,
             "lr_scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None,
         }
-        self.checkpointer.save(self.global_step, self.model, self.optimizer, extra)
+        self.checkpointer.save(self.global_step, self.model, self.optimizer, extra, self.ema)
 
     def finish(self) -> None:
-        best = self.output_dir / "best.ckpt"
-        final = best if best.is_file() else self.output_dir / "last.ckpt"
+        suffix = self.ckpt_suffixes()[-1]
+        best = self.output_dir / f"best{suffix}.ckpt"
+        final = best if best.is_file() else self.output_dir / f"last{suffix}.ckpt"
         # Release the GPUs before the final evaluation runs in its own processes.
-        self.model = self.optimizer = self.lr_scheduler = None
+        self.model = self.optimizer = self.lr_scheduler = self.ema = None
         self.agent = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

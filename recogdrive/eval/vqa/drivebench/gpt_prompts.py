@@ -1,3 +1,4 @@
+# GPT grading prompts from DriveBench (https://github.com/drive-bench/toolkit), Apache-2.0, see LICENSE.
 PERCEPTION_MCQ_PROMPT = """Please evaluate the multiple-choice answer on a scale from 0 to 100, where a higher score reflects precise alignment with the correct answer and well-supported reasoning. Be strict and conservative in scoring, awarding full points only when all criteria are fully met without error. Deduct points for minor inaccuracies, omissions, or lack of clarity. Distribute the Total Score across the following criteria:
 
 1. Answer Correctness (50 points):
