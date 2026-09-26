@@ -44,9 +44,8 @@ DELTA_NORM_MAX = [29.72, 9.98, 0.86]
 
 
 @functools.lru_cache(maxsize=None)
-def action_norm_bounds(training_target: str, device: torch.device, dtype: torch.dtype):
+def action_norm_bounds(low: tuple, high: tuple, device: torch.device, dtype: torch.dtype):
     """(1, 1, 3) min/max tensors, built once per device and dtype: building them every step syncs the GPU."""
-    low, high = (WAYPOINT_NORM_MIN, WAYPOINT_NORM_MAX) if training_target == "waypoint" else (DELTA_NORM_MIN, DELTA_NORM_MAX)
     if any(h <= l for l, h in zip(low, high)):
         raise ValueError("All action norm max values must be greater than min values.")
     return (torch.tensor(low, device=device, dtype=dtype).view(1, 1, -1),
@@ -148,6 +147,9 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     vlm_hidden_size: Optional[int] = None
     training_target: Literal['waypoint', 'delta'] = 'waypoint'
     delta_interval_length: float = 0.5
+    # (x, y, heading) range mapped to [-1, 1]; sampled actions are clipped to it. None = NAVSIM 4 s statistics.
+    action_norm_min: Optional[List[float]] = None
+    action_norm_max: Optional[List[float]] = None
     
     tune_projector: bool = True
     tune_diffusion_model: bool = True
@@ -1141,14 +1143,17 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def norm_odo(self, trajectory: torch.Tensor) -> torch.Tensor:
         """Normalizes waypoint or delta actions to the range [-1, 1]."""
-        action_min, action_max = action_norm_bounds(self.config.training_target, trajectory.device, trajectory.dtype)
+        action_min, action_max = self.norm_bounds(trajectory.device, trajectory.dtype)
         return 2 * (trajectory - action_min) / (action_max - action_min) - 1
-    
+
+    def norm_bounds(self, device: torch.device, dtype: torch.dtype):
+        config = self.config
+        low, high = (WAYPOINT_NORM_MIN, WAYPOINT_NORM_MAX) if config.training_target == "waypoint" else (DELTA_NORM_MIN, DELTA_NORM_MAX)
+        return action_norm_bounds(tuple(config.action_norm_min or low), tuple(config.action_norm_max or high), device, dtype)
+
     def denorm_odo(self, normalized_trajectory: torch.Tensor) -> torch.Tensor:
         """Denormalizes sampled actions and returns waypoint trajectories."""
-        action_min, action_max = action_norm_bounds(
-            self.config.training_target, normalized_trajectory.device, normalized_trajectory.dtype
-        )
+        action_min, action_max = self.norm_bounds(normalized_trajectory.device, normalized_trajectory.dtype)
         actions = (normalized_trajectory + 1) / 2 * (action_max - action_min) + action_min
         if self.config.training_target == "delta":
             return delta_to_waypoint(actions, self.config.delta_interval_length)
@@ -1204,6 +1209,8 @@ def make_recogdrive_config(
     training_target: str = "waypoint",
     delta_interval_length: float = 0.5,
     vlm_hidden_size: Optional[int] = None,
+    action_norm_min: Optional[List[float]] = None,
+    action_norm_max: Optional[List[float]] = None,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -1239,6 +1246,7 @@ def make_recogdrive_config(
         "attention_bias": True,
         "norm_eps": 1e-5,
         "interleave_attention": True,
+        "max_position_embeddings": action_horizon,
     }
     diffusion_model_cfg.update(common_params)
 
@@ -1246,6 +1254,7 @@ def make_recogdrive_config(
         diffusion_model_cfg=diffusion_model_cfg,
         action_dim=action_dim,
         action_horizon=action_horizon,
+        max_seq_len=action_horizon,
         input_embedding_dim=input_embedding_dim,
         sampling_method=sampling_method,
         num_inference_steps=num_inference_steps,
@@ -1254,6 +1263,8 @@ def make_recogdrive_config(
         training_target=validate_training_target(training_target),
         delta_interval_length=delta_interval_length,
         vlm_hidden_size=vlm_hidden_size,
+        action_norm_min=action_norm_min,
+        action_norm_max=action_norm_max,
     )
     
     return config

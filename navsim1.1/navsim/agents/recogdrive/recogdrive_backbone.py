@@ -95,7 +95,8 @@ class RecogDriveBackbone(nn.Module):
     def __init__(self,
                  model_type: str,
                  checkpoint_path: str,
-                 device: str = "cuda"):
+                 device: str = "cuda",
+                 max_length: int = 2800):
         """
         Initializes and loads the specified model and its preprocessor/tokenizer.
 
@@ -103,6 +104,7 @@ class RecogDriveBackbone(nn.Module):
             model_type (str): The type of model to load. Supported: 'internvl', 'qwen'.
             checkpoint_path (str): The path to the model checkpoint.
             device (str): The device to load the model onto ('cuda', 'cpu').
+            max_length (int): Padded prompt length; multi-view prompts need more than the single-view 2800.
         """
         super().__init__()
 
@@ -110,6 +112,7 @@ class RecogDriveBackbone(nn.Module):
         self.tokenizer = None  
         self.model_type = model_type.lower()
         self.device = device
+        self.max_length = max_length
 
         print(f"Initializing backbone of type: '{self.model_type}' from path: '{checkpoint_path}'")
 
@@ -194,9 +197,10 @@ class RecogDriveBackbone(nn.Module):
         
         model_dtype = next(self.model.parameters()).dtype
 
+        # one entry of num_patches_list per <image> placeholder, in prompt order
+        counts = iter(num_patches_list)
         queries = []
-        for idx, num_patches in enumerate(num_patches_list):
-            question = questions[idx]
+        for question in questions:
             if pixel_values is not None and '<image>' not in question:
                 question = '<image>\n' + question
             
@@ -206,14 +210,15 @@ class RecogDriveBackbone(nn.Module):
             template.append_message(template.roles[1], None)
             query = template.get_prompt()
 
-            image_tokens = IMG_START_TOKEN + IMG_CONTEXT_TOKEN * self.num_image_token * num_patches + IMG_END_TOKEN
-            query = query.replace('<image>', image_tokens, 1)
+            for _ in range(query.count('<image>')):
+                image_tokens = IMG_START_TOKEN + IMG_CONTEXT_TOKEN * self.num_image_token * next(counts) + IMG_END_TOKEN
+                query = query.replace('<image>', image_tokens, 1)
             queries.append(query)
         self.tokenizer.padding_side = 'left'
-        model_inputs = self.tokenizer(queries, padding='max_length', max_length=2800)
+        model_inputs = self.tokenizer(queries, padding='max_length', max_length=self.max_length)
         longest = max(map(len, model_inputs['input_ids']))
-        if longest > 2800:
-            raise ValueError(f"VLM prompt has {longest} tokens > max_length 2800 "
+        if longest > self.max_length:
+            raise ValueError(f"VLM prompt has {longest} tokens > max_length {self.max_length} "
                              f"(images tiled into up to {max(num_patches_list)} patches)")
         device = torch.device(self.device)
         pin = device.type == "cuda"
@@ -244,12 +249,13 @@ class RecogDriveBackbone(nn.Module):
 
         messages_batch = []
         for image_path, question in zip(image_paths, questions):
+            paths = [image_path] if isinstance(image_path, str) else list(image_path)
             messages_batch.append([
                 {"role": "system", "content": system_message},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "image", "image": image_path},
+                        *({"type": "image", "image": path} for path in paths),
                         {"type": "text", "text": question.replace("<image>\n", "").replace("<image>", "")},
                     ],
                 },

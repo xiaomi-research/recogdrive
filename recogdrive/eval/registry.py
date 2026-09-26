@@ -1,5 +1,10 @@
-"""Evaluator registry. An evaluator scores a saved checkpoint in child processes, so the
-training loop never blocks on it and every benchmark keeps its own official scoring code."""
+"""Evaluator registry. `evaluator.name` is one registered benchmark or a list of them; `evaluator.<name>` holds
+settings of one benchmark over the shared ones. Subprocess evaluators score a saved checkpoint in child processes,
+so the training loop never blocks on them and every benchmark keeps its own official scoring code; in-process ones
+(`in_process = True`) score the live model, also at the end of training before it is released.
+
+An evaluator provides every_n_epochs, on_end, during_training(trainer, ckpt, tag) (every rank), poll() and
+finish(final_ckpt) (main rank, (tag, metrics) pairs), and release()."""
 
 import csv
 import logging
@@ -28,15 +33,24 @@ def register(name: str):
     return deco
 
 
-def build_evaluator(cfg: DictConfig, output_dir: Path):
+def build_evaluators(cfg: DictConfig, output_dir: Path) -> list:
     section = OmegaConf.select(cfg, "evaluator")
-    name = OmegaConf.select(cfg, "evaluator.name") if section is not None else None
-    if not name:
-        return None
-    cls = EVALUATORS.get(str(name))
-    if cls is None:
-        raise KeyError(f"Unknown evaluator {name!r}. Registered: {sorted(EVALUATORS)}")
-    return cls(cfg, section, Path(output_dir))
+    names = OmegaConf.select(cfg, "evaluator.name") if section is not None else None
+    if not names:
+        return []
+    evaluators = []
+    for name in [names] if isinstance(names, str) else list(names):
+        cls = EVALUATORS.get(str(name))
+        if cls is None:
+            raise KeyError(f"Unknown evaluator {name!r}. Registered: {sorted(EVALUATORS)}")
+        own = OmegaConf.select(section, str(name))
+        # a fresh root: Hydra's struct flag on `section` would reject the benchmark's own keys
+        merged = OmegaConf.merge(OmegaConf.create(), section, own) if isinstance(own, DictConfig) else section
+        evaluator = cls(cfg, merged, Path(output_dir))
+        evaluator.benchmark = str(name)
+        evaluator.root = Path(output_dir) / "eval" / str(name)
+        evaluators.append(evaluator)
+    return evaluators
 
 
 class SubprocessEvaluator:
@@ -143,12 +157,15 @@ def snapshot(ckpt: Path, out_dir: Path) -> Path:
 
 
 def average_row(csv_path: Path) -> Dict[str, float]:
+    """Summary row of a NAVSIM score csv: `average*` (one-stage) or `extended_pdm_score_combined` (two-stage)."""
     with open(csv_path, newline="") as f:
         rows = list(csv.DictReader(f))
     for row in reversed(rows):
-        if str(row.get("token", "")).startswith("average"):
+        if str(row.get("token", "")).startswith(("average", "extended_pdm_score_combined")):
             out = {}
             for key, value in row.items():
+                if not key:  # the csv's unnamed index column
+                    continue
                 try:
                     out[key] = float(value)
                 except (TypeError, ValueError):

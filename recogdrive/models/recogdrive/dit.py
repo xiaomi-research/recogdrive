@@ -159,6 +159,7 @@ class LightningDiT(nn.Module):
         norm_type: str = "rmsnorm",
         norm_eps: float = 1e-5,
         interleave_attention: bool = True,
+        max_position_embeddings: int = 8,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -173,7 +174,7 @@ class LightningDiT(nn.Module):
 
         self.rotary_embedder = RotaryEmbedding(
             dim=self.head_dim,
-            max_position_embeddings=8, 
+            max_position_embeddings=max_position_embeddings,
         )
 
         self.transformer_blocks = nn.ModuleList([

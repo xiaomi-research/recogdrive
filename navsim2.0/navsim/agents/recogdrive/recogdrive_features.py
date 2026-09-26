@@ -18,11 +18,15 @@ def format_number(n, decimal_places=2):
     return f"{n:+.{decimal_places}f}" if abs(round(n, decimal_places)) > 1e-2 else "0.0"
 
 
-def front_camera_path(cameras) -> str:
-    image = cameras[-1].cam_f0.image
+NAVSIM_VIEWS = {"front": "cam_f0", "front_left": "cam_l0", "front_right": "cam_r0", "left": "cam_l1",
+                "right": "cam_r1", "back_left": "cam_l2", "back_right": "cam_r2", "back": "cam_b0"}
+
+
+def camera_path(cameras, attr: str = "cam_f0") -> str:
+    image = getattr(cameras[-1], attr).image
     if isinstance(image, (str, Path)):
         return str(image)
-    raise TypeError("cam_f0.image must be a file path; pass load_image_path=True to SceneLoader")
+    raise TypeError(f"{attr}.image must be a file path; pass load_image_path=True to SceneLoader")
 
 
 class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
@@ -31,7 +35,8 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
                  model_type: Optional[str] = None,
                  checkpoint_path: Optional[str] = None,
                  device: str = "cuda",
-                 cache_mode: bool = False, ):
+                 cache_mode: bool = False,
+                 multi_view: bool = False):
         """
         Initializes the feature builder.
 
@@ -49,6 +54,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
         self.cache_hidden_state = cache_hidden_state
         self.backbone = None
         self.cache_mode = cache_mode
+        self.multi_view = multi_view
         self.model_type = model_type.lower() if model_type else None
 
         if self.cache_hidden_state and self.cache_mode:
@@ -81,23 +87,26 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
 
 
         if not self.cache_hidden_state:
-            image_path = front_camera_path(cameras)
+            image_path = camera_path(cameras)
             
             path_as_ordinals = [ord(char) for char in image_path]
             
             path_tensor = torch.tensor(path_as_ordinals, dtype=torch.long)
             
-            return {
+            features = {
                 "history_trajectory": history_trajectory.cpu(),
                 "high_command_one_hot": high_command_one_hot.cpu(),
                 "status_feature": status_feature.cpu(),
                 "image_path_tensor": path_tensor.cpu(),
             }
+            if self.multi_view:
+                features["camera_paths"] = [(view, camera_path(cameras, attr)) for view, attr in NAVSIM_VIEWS.items()]
+            return features
         else:
             if self.backbone is None:
                 raise RuntimeError("FeatureBuilder is in online mode, but the backbone was not initialized.")
             
-            image_path = front_camera_path(cameras)
+            image_path = camera_path(cameras)
             if self.model_type == "qwen":
                 pixel_values_cat = [image_path]
                 num_patches_list = None

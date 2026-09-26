@@ -1,25 +1,45 @@
-"""Dataset registry and the batch contract every data pipeline follows.
+"""Dataset registry and the sample contract every data source follows.
 
-A loader returns a torch Dataset whose items are (features: dict, targets: dict[, token]).
-The token is needed by trainers that look samples up elsewhere, e.g. RL rewards from a metric cache.
-Batching is generic: equal shapes stack, variable-length sequences pad with zeros, VLM image
-tiles (`pixel_values`) concatenate along dim 0, and anything that is not a tensor becomes a list.
+A loader returns a torch Dataset whose items are (features: dict, targets: dict, token: str):
 
-A model may define `worker_transform()` returning a per-sample transform of the features dict
-(or None); it runs in the dataloader workers, so model-specific preprocessing stays off the
-training process and out of the datasets.
+    features["history_trajectory"]    (4, 3) ego poses (x, y, heading) at t = -1.5, -1.0, -0.5, 0 s
+    features["high_command_one_hot"]  (4,)   left, straight, right, unknown
+    features["status_feature"]        (8,)   command one-hot, velocity (vx, vy), acceleration (ax, ay)
+    features["camera_paths"]          [(view, image path)], every camera the source has, front first; views are
+                                      front, front_left, front_right, left, right, back_left, back_right, back
+                                      (NAVSIM caches carry the front view only, as `image_path_tensor`)
+    targets["trajectory"]             (horizon(model), 3) future ego poses at 0.5 s spacing
+
+All poses are in the current ego frame (x forward, y left, rear axle). The token names the sample; RL rewards and
+benchmarks look samples up by it. A dataset may define `eval_info(token)` with benchmark-only data (object boxes,
+rater trajectories) that never enters a batch. New sources register with `@register(name)`, from their own module
+listed in the `plugins` config if they live outside this package; the trainer does not change.
+
+Batching is generic: equal shapes stack, variable-length sequences pad with zeros, VLM image tiles (`pixel_values`)
+concatenate along dim 0, anything that is not a tensor becomes a list, and keys only some samples of a batch have
+(source-specific extras in a mixture) are dropped.
+
+A model may define `worker_transform(image_augment=None)` returning a per-sample transform of the features dict (or
+None); it runs in the dataloader workers, so model-specific preprocessing stays off the training process and out of
+the datasets. The training split gets the `augment` config: ego-state dropout before that transform, photometric
+image augmentation inside it.
 
 Host-side metadata (prompt text, file paths, tile counts) must stay Python objects: every batch
 tensor goes to the GPU before forward, and reading a GPU tensor from Python stalls the device.
 """
 
+import importlib
+import logging
 from typing import Any, Callable, Dict
 
 import torch
 import torch.nn.utils.rnn as rnn_utils
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler
 
+logger = logging.getLogger(__name__)
+
+POSE_INTERVAL_S = 0.5
 LoaderFn = Callable[[Any, Any, str], Any]
 LOADERS: Dict[str, LoaderFn] = {}
 
@@ -29,6 +49,23 @@ def register(name: str) -> Callable[[LoaderFn], LoaderFn]:
         LOADERS[name] = fn
         return fn
     return deco
+
+
+def import_plugins(cfg: Any) -> None:
+    """Imports the modules listed in `plugins`, which register more loaders or evaluators."""
+    for module in OmegaConf.select(cfg, "plugins") or []:
+        importlib.import_module(str(module))
+
+
+def horizon(model: Any) -> int:
+    """Number of 0.5 s target poses the model predicts (its trajectory_sampling)."""
+    sampling = getattr(model, "trajectory_sampling", None)
+    if sampling is None:
+        raise AttributeError(f"{type(model).__name__} must expose trajectory_sampling (num_poses, interval_length)")
+    if abs(float(sampling.interval_length) - POSE_INTERVAL_S) > 1e-6:
+        raise ValueError(f"data sources provide poses every {POSE_INTERVAL_S} s, the model samples every "
+                         f"{sampling.interval_length} s")
+    return int(sampling.num_poses)
 
 
 def loader_name(cfg: Any) -> str:
@@ -44,6 +81,10 @@ class TransformedDataset(Dataset):
     def __init__(self, dataset, transform: Callable[[dict], dict]):
         self.dataset = dataset
         self.transform = transform
+
+    @property
+    def sample_weights(self):
+        return getattr(self.dataset, "sample_weights", None)
 
     def __len__(self):
         return len(self.dataset)
@@ -61,12 +102,29 @@ def build_split(cfg: Any, agent: Any, split: str):
             f"Unknown data loader {name!r}. Registered: {sorted(LOADERS)}. "
             "Register a loader for a new dataset; the trainer does not change."
         )
-    return with_worker_transform(fn(cfg, agent, split), agent)
+    augment = OmegaConf.select(cfg, "augment") if split == "train" else None
+    return with_worker_transform(fn(cfg, agent, split), agent, augment)
 
 
-def with_worker_transform(dataset, agent):
-    transform = agent.worker_transform() if hasattr(agent, "worker_transform") else None
-    return dataset if transform is None else TransformedDataset(dataset, transform)
+def with_worker_transform(dataset, agent, augment=None):
+    from torchvision.transforms import Compose
+
+    from recogdrive.data.augment import ego_dropout, image_augment
+
+    images = image_augment(augment)
+    make = getattr(agent, "worker_transform", None)
+    transform = None if make is None else make(image_augment=images) if images is not None else make()
+    if images is not None and transform is None:
+        logger.warning("augment: the model reads no images in the dataloader, image augmentation is skipped")
+    steps = [step for step in (ego_dropout(augment), transform) if step is not None]
+    if not steps:
+        return dataset
+    return TransformedDataset(dataset, steps[0] if len(steps) == 1 else Compose(steps))
+
+
+def dataset_of(dataset):
+    """The source dataset under the worker transform."""
+    return dataset.dataset if isinstance(dataset, TransformedDataset) else dataset
 
 
 def collate_field(key: str, values):
@@ -85,7 +143,8 @@ def collate_field(key: str, values):
 
 
 def collate_dicts(dicts):
-    return {key: collate_field(key, [d[key] for d in dicts]) for key in dicts[0]}
+    keys = [key for key in dicts[0] if all(key in d for d in dicts[1:])]
+    return {key: collate_field(key, [d[key] for d in dicts]) for key in keys}
 
 
 def collate(batch):
@@ -96,6 +155,28 @@ def collate(batch):
     if "pixel_values" in features and "num_patches" not in features:
         features["num_patches"] = [f["pixel_values"].shape[0] for f in features_list]
     return features, collate_dicts(targets_list), list(tokens)
+
+
+class WeightedDistributedSampler(Sampler):
+    """Draws len(weights) indices with replacement, proportional to the weights, identically on every rank from
+    (seed, epoch), and yields this rank's share."""
+
+    def __init__(self, weights, rank: int, world: int, seed: int = 0):
+        self.weights = torch.as_tensor(weights, dtype=torch.double)
+        self.rank, self.world, self.seed = rank, world, seed
+        self.per_rank = len(self.weights) // world
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        drawn = torch.multinomial(self.weights, self.per_rank * self.world, replacement=True, generator=generator)
+        return iter(drawn[self.rank::self.world].tolist())
+
+    def __len__(self) -> int:
+        return self.per_rank
 
 
 def dataloader_kwargs(params) -> dict:
@@ -113,7 +194,10 @@ def make_loader(dataset, params, train: bool, rank: int, world: int) -> DataLoad
     kwargs = dataloader_kwargs(params)
     # Fixed batch shapes keep compiled graphs and cuDNN plans valid for the whole epoch.
     drop_last = bool(kwargs.pop("drop_last", train))
-    if world > 1:
+    weights = getattr(dataset, "sample_weights", None)
+    if train and weights is not None:
+        kwargs["sampler"] = WeightedDistributedSampler(weights, rank, world)
+    elif world > 1:
         kwargs["sampler"] = DistributedSampler(dataset, num_replicas=world, rank=rank, shuffle=train, drop_last=drop_last)
     else:
         kwargs["shuffle"] = train

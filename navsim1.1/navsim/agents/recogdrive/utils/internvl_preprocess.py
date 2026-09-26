@@ -74,8 +74,15 @@ def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbna
         processed_images.append(thumbnail_img)
     return processed_images
 
-def load_image(image_file, input_size=448, max_num=12):
+def load_image(image_file, input_size=448, max_num=12, short_side=None, augment=None):
+    """InternVL tiles of an image; `short_side` rescales it first (e.g. 960 / 480 for multi-view),
+    `augment` is a PIL -> PIL training augmentation."""
     image = Image.open(image_file).convert('RGB')
+    if short_side:
+        scale = short_side / min(image.size)
+        image = image.resize((round(image.width * scale), round(image.height * scale)), Image.BICUBIC)
+    if augment is not None:
+        image = augment(image)
     transform = build_transform(input_size=input_size)
     images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=True, max_num=max_num)
     pixel_values = [transform(image) for image in images]

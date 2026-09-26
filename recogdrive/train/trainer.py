@@ -14,11 +14,13 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-from recogdrive.data import DevicePrefetcher, build_split, loader_name, make_loader
+from recogdrive.adapters import check_policy
+from recogdrive.data import DevicePrefetcher, build_split, import_plugins, loader_name, make_loader
 from recogdrive.distributed import DistributedContext, ResumeCheckpointer, export_model_state, gradient_sync, parallelize
-from recogdrive.eval import build_evaluator
+from recogdrive.eval import build_evaluators
 from recogdrive.train.args import TrainArgs
 from recogdrive.train.ema import EMA
+from recogdrive.train.monitor import Monitor
 
 logger = logging.getLogger("recogdrive")
 
@@ -41,10 +43,13 @@ class Trainer:
         self.args.validate(self.ctx.world_size)
         if self.args.seed is not None:
             torch.manual_seed(int(self.args.seed))
+        import_plugins(cfg)
         self.agent = instantiate(cfg.agent)
+        check_policy(self.agent)
         self.output_dir = Path(cfg.output_dir)
         if self.ctx.is_main:
             self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.monitor = Monitor(cfg, self.output_dir, self.ctx.is_main)
         self.model = None
         self.optimizer = None
         self.lr_scheduler = None
@@ -54,8 +59,9 @@ class Trainer:
         self.ema = None
         self.global_batch = 0
         self.checkpointer = ResumeCheckpointer(self.output_dir / "checkpoints", self.ctx, self.args.async_save)
-        self.evaluator = build_evaluator(cfg, self.output_dir)
+        self.evaluators = build_evaluators(cfg, self.output_dir)
         self.start_epoch = 0
+        self.epoch = 0
         self.global_step = 0
         self.best_val = math.inf
         self.micro = 0
@@ -79,6 +85,11 @@ class Trainer:
             self.train_loop()
         finally:
             self.checkpointer.wait()
+        live = [evaluator for evaluator in self.evaluators if getattr(evaluator, "in_process", False) and evaluator.on_end]
+        if live:
+            with self.averaged():
+                for evaluator in live:
+                    evaluator.during_training(self, None, "final")
         self.finish()
 
     def build_data(self) -> None:
@@ -131,6 +142,7 @@ class Trainer:
         sampler = getattr(self.train_loader, "sampler", None)
         stop = False
         for epoch in range(self.start_epoch, args.max_epochs):
+            self.epoch = epoch
             model.train()
             if hasattr(sampler, "set_epoch"):
                 sampler.set_epoch(epoch)
@@ -196,17 +208,16 @@ class Trainer:
         window.update(time=now, wait=batches.wait_s, step=self.global_step)
         if not self.ctx.is_main:
             return
-        metrics = " ".join(f"{name}={value:.4f}" for name, value in zip(names, stats))
-        logger.info(
-            "[epoch %d step %d] %s lr=%.3g step_ms=%.1f data_wait_ms=%.1f samples/s=%.1f",
-            epoch + 1,
-            self.global_step,
-            metrics,
-            self.optimizer.param_groups[0]["lr"],
-            1000.0 * elapsed / steps,
-            1000.0 * waited / steps,
-            self.global_batch * steps / max(elapsed, 1e-9),
-        )
+        metrics = {f"train/{name}": value for name, value in zip(names, stats)}
+        metrics.update({
+            "train/lr": self.optimizer.param_groups[0]["lr"],
+            "perf/step_ms": 1000.0 * elapsed / steps,
+            "perf/data_wait_ms": 1000.0 * waited / steps,
+            "perf/samples_per_s": self.global_batch * steps / max(elapsed, 1e-9),
+        })
+        self.monitor.log(metrics, self.global_step, epoch + 1)
+        logger.info("[epoch %d step %d] %s", epoch + 1, self.global_step,
+                    " ".join(f"{key.split('/', 1)[1]}={value:.4g}" for key, value in metrics.items()))
 
     def averaged(self):
         """Context in which the model holds its EMA weights (a no-op without EMA)."""
@@ -236,21 +247,30 @@ class Trainer:
         improved = val_loss is not None and val_loss < self.best_val
         if improved:
             self.best_val = val_loss
+        epoch_metrics = {"epoch/train_loss": train_loss}
+        if val_loss is not None:
+            epoch_metrics["val/loss"] = val_loss
+        self.monitor.log(epoch_metrics, self.global_step, epoch + 1)
+        self.monitor.plot()
         tagged = self.export(epoch, train_loss, val_loss, improved)
         self.evaluate(epoch, tagged)
         self.save_resume(epoch + 1)
 
     def evaluate(self, epoch: int, ckpt: Path) -> None:
         """Periodic evaluation of the epoch's checkpoint; every rank takes part, with the model holding its weights."""
-        if self.evaluator is None:
-            return
-        if self.ctx.is_main:
-            for name, result in self.evaluator.poll():
-                logger.info("eval %s: %s", name, result)
-        every = self.evaluator.every_n_epochs
-        if every and (epoch + 1) % every == 0:
+        due = [e for e in self.evaluators if e.every_n_epochs and (epoch + 1) % e.every_n_epochs == 0]
+        if due:
             with self.averaged():
-                self.evaluator.during_training(self, ckpt, f"epoch_{epoch + 1:04d}")
+                for evaluator in due:
+                    evaluator.during_training(self, ckpt, f"epoch_{epoch + 1:04d}")
+        for evaluator in self.evaluators:
+            self.report(evaluator, evaluator.poll() if self.ctx.is_main else [])
+
+    def report(self, evaluator, results) -> None:
+        for tag, result in results:
+            logger.info("eval %s %s: %s", evaluator.benchmark, tag, result)
+            self.monitor.log({f"eval/{evaluator.benchmark}/{key}": value for key, value in result.items()},
+                             self.global_step, self.epoch + 1)
 
     def export(self, epoch: int, train_loss: float, val_loss: Optional[float], improved: bool) -> Path:
         """Writes last.ckpt (and last-EMA.ckpt), then the top-k and best copies. Returns, on every rank, the
@@ -346,8 +366,8 @@ class Trainer:
         self.agent = None
         self.clip_params = []
         self.train_loader = self.val_loader = None
-        if self.evaluator is not None:
-            self.evaluator.release()
+        for evaluator in self.evaluators:
+            evaluator.release()
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -355,9 +375,10 @@ class Trainer:
                 logger.info("released GPU memory: %.2f GiB still allocated, %.2f GiB reserved",
                             torch.cuda.memory_allocated() / 2 ** 30, torch.cuda.memory_reserved() / 2 ** 30)
         self.ctx.close()
-        if self.evaluator is not None and self.ctx.is_main:
-            for tag, result in self.evaluator.finish(final):
-                logger.info("eval %s: %s", tag, result)
+        if self.ctx.is_main:
+            for evaluator in self.evaluators:
+                self.report(evaluator, evaluator.finish(final))
+        self.monitor.close()
 
 
 def vlm_dir(ckpt: Path) -> Path:

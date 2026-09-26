@@ -2,8 +2,9 @@
 training glue (checkpoint loading, loss, optimizers, GRPO reward). The network is the backbone and
 diffusion planner imported below."""
 
-from typing import Any, List, Dict, Optional, Union
+from typing import Any, List, Dict, Optional, Tuple, Union
 import contextlib
+import dataclasses
 import functools
 import inspect
 import itertools
@@ -35,21 +36,51 @@ from .utils.utils import format_number, build_from_configs
 AGENT_TAKES_SAMPLING = "trajectory_sampling" in inspect.signature(AbstractAgent.__init__).parameters
 
 
-def prepare_vlm_inputs(features: Dict[str, torch.Tensor], load_tiles: bool) -> Dict[str, torch.Tensor]:
-    """Runs in dataloader workers: prompt and image path as Python strings, so the model never reads
-    them back from GPU tensors, plus the InternVL tiles when load_tiles."""
+SURROUND_VIEWS = ("front", "front_left", "front_right", "left", "right", "back_left", "back_right", "back")
+
+
+def camera_views(features: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """(view, path) pairs of a sample: `camera_paths` (every view the source has, front first) or
+    the front-only `image_path_tensor` of NAVSIM caches."""
+    if "camera_paths" in features:
+        return [tuple(view) for view in features["camera_paths"]]
     path_tensor = features.get("image_path_tensor")
     if not isinstance(path_tensor, torch.Tensor):
+        return []
+    return [("front", ReCogDriveAgent.decode_paths_from_tensor(path_tensor.reshape(1, -1))[0])]
+
+
+def prepare_vlm_inputs(
+    features: Dict[str, Any],
+    load_tiles: bool,
+    num_poses: int = 8,
+    cameras: Optional[List[str]] = None,
+    short_sides: Tuple[Optional[int], Optional[int]] = (None, None),
+    image_augment=None,
+) -> Dict[str, Any]:
+    """Runs in dataloader workers: prompt and image paths as Python strings, so the model never reads
+    them back from GPU tensors, plus the InternVL tiles when load_tiles. `cameras` selects the
+    views of a multi-view prompt (front / other views rescaled to `short_sides`); None keeps the
+    single front view at its native resolution."""
+    views = camera_views(features)
+    if not views:
         return features
-    if path_tensor.ndim == 1:
-        path_tensor = path_tensor.unsqueeze(0)
-    image_paths = ReCogDriveAgent.decode_paths_from_tensor(path_tensor)
-    features["image_paths"] = image_paths[0]
+    if cameras:
+        available = dict(views)
+        views = [(view, available[view]) for view in cameras if view in available]
+        sizes = [short_sides[0] if view == "front" else short_sides[1] for view, _ in views]
+        features["image_paths"] = [path for _, path in views]
+    else:
+        views = [next((view for view in views if view[0] == "front"), views[0])]
+        sizes = [None]
+        features["image_paths"] = views[0][1]
     features["vlm_question"] = ReCogDriveAgent.vlm_questions(
-        features["history_trajectory"], features["high_command_one_hot"]
+        features["history_trajectory"], features["high_command_one_hot"],
+        num_poses=num_poses, views=[view for view, _ in views] if cameras else None,
     )[0]
     if load_tiles:
-        pixel_values_list = [load_image(path) for path in image_paths]
+        pixel_values_list = [load_image(path, short_side=size, augment=image_augment)
+                             for (_, path), size in zip(views, sizes)]
         features["pixel_values"] = torch.cat(pixel_values_list, dim=0)
         features["num_patches"] = torch.tensor([pv.shape[0] for pv in pixel_values_list])
     return features
@@ -85,9 +116,24 @@ class ReCogDriveAgent(AbstractAgent):
         grpo_bc_coeff: float = 0.1,
         grpo_sample_time: int = 8,
         optimizer_type: str = "adamw",
+        cameras: Optional[List[str]] = None,
+        front_short_side: int = 960,
+        side_short_side: int = 480,
+        vlm_max_length: Optional[int] = None,
+        action_norm_min: Optional[List[float]] = None,
+        action_norm_max: Optional[List[float]] = None,
     ):
+        """cam_type 'multi' feeds `cameras` (default: every surround view the data source has) with the
+        front view rescaled to front_short_side and the others to side_short_side; 'single' feeds the
+        native-resolution front view. vlm_max_length (the padded prompt length) defaults to 2800 for single view and
+        8704 for multi-view (WOD-E2E's 8 views take ~8240 tokens, nuScenes' 6 ~6450). The prediction horizon is
+        trajectory_sampling.num_poses."""
         super().__init__(trajectory_sampling) if AGENT_TAKES_SAMPLING else super().__init__()
-        self._trajectory_sampling = trajectory_sampling
+        self._trajectory_sampling = self.trajectory_sampling = trajectory_sampling
+        if cam_type not in ("single", "multi"):
+            raise ValueError(f"cam_type must be 'single' or 'multi', got {cam_type!r}")
+        self.cameras = list(cameras or SURROUND_VIEWS) if cam_type == "multi" else None
+        self.short_sides = (front_short_side, side_short_side)
         self.vlm_path = vlm_path
         self.checkpoint_path = checkpoint_path
         self.vlm_type = vlm_type
@@ -127,7 +173,8 @@ class ReCogDriveAgent(AbstractAgent):
             self.backbone = RecogDriveBackbone(
                 model_type=self.vlm_type,
                 checkpoint_path=self.vlm_path,
-                device=device
+                device=device,
+                max_length=vlm_max_length or (8704 if self.cameras else 2800),
             )
 
             if not self.train_backbone:
@@ -138,30 +185,22 @@ class ReCogDriveAgent(AbstractAgent):
                 for p in self.backbone.parameters():
                     p.requires_grad = True
 
-        if self.dit_type == "large":
-            cfg = make_recogdrive_config(
-                self.dit_type,
-                action_dim=3,
-                action_horizon=8,
-                grpo=self.grpo,
-                input_embedding_dim=1536,
-                sampling_method=sampling_method,
-                training_target=self.training_target,
-                delta_interval_length=self._trajectory_sampling.interval_length,
-                vlm_hidden_size=self.vlm_hidden_size,
-            )
-        elif self.dit_type == "small":
-            cfg = make_recogdrive_config(
-                self.dit_type,
-                action_dim=3,
-                action_horizon=8,
-                grpo=self.grpo,
-                input_embedding_dim=384,
-                sampling_method=sampling_method,
-                training_target=self.training_target,
-                delta_interval_length=self._trajectory_sampling.interval_length,
-                vlm_hidden_size=self.vlm_hidden_size,
-            )
+        embedding_dims = {"large": 1536, "small": 384}
+        if self.dit_type not in embedding_dims:
+            raise ValueError(f"dit_type must be one of {sorted(embedding_dims)}, got {self.dit_type!r}")
+        cfg = make_recogdrive_config(
+            self.dit_type,
+            action_dim=3,
+            action_horizon=self._trajectory_sampling.num_poses,
+            grpo=self.grpo,
+            input_embedding_dim=embedding_dims[self.dit_type],
+            sampling_method=sampling_method,
+            training_target=self.training_target,
+            delta_interval_length=self._trajectory_sampling.interval_length,
+            vlm_hidden_size=self.vlm_hidden_size,
+            action_norm_min=action_norm_min,
+            action_norm_max=action_norm_max,
+        )
 
         cfg.vlm_size = self.vlm_size
         cfg.grpo_cfg.flow_noise_level = self.flow_noise_level
@@ -186,11 +225,20 @@ class ReCogDriveAgent(AbstractAgent):
     def name(self) -> str:
         return self.__class__.__name__
 
-    def worker_transform(self):
+    def worker_transform(self, image_augment=None):
+        """Per-sample preprocessing run in dataloader workers; image_augment (PIL -> PIL) is passed for
+        training splits only."""
         if self.cache_hidden_state:
             return None
         # Qwen consumes image paths itself; InternVL tiles are built in the dataloader workers.
-        return functools.partial(prepare_vlm_inputs, load_tiles=self.vlm_type.lower() != "qwen")
+        return functools.partial(
+            prepare_vlm_inputs,
+            load_tiles=self.vlm_type.lower() != "qwen",
+            num_poses=self._trajectory_sampling.num_poses,
+            cameras=self.cameras,
+            short_sides=self.short_sides,
+            image_augment=image_augment,
+        )
 
     def initialize(self) -> None:
         if self.checkpoint_path:
@@ -204,7 +252,8 @@ class ReCogDriveAgent(AbstractAgent):
             self.load_state_dict(filtered_ckpt, strict=False)
 
     def get_sensor_config(self) -> SensorConfig:
-        return SensorConfig.build_all_sensors(include=[0, 1, 2, 3])
+        # the features read the current frame's camera paths only, never the lidar
+        return dataclasses.replace(SensorConfig.build_all_sensors(include=[3]), lidar_pc=False)
 
     def get_target_builders(self) -> List[AbstractTargetBuilder]:
         return [TrajectoryTargetBuilder(
@@ -219,6 +268,7 @@ class ReCogDriveAgent(AbstractAgent):
             checkpoint_path=self.vlm_path,
             device=self.device,
             cache_mode=self.cache_mode,
+            multi_view=self.cameras is not None,
         )]
 
     def train(self, mode: bool = True):
@@ -228,7 +278,17 @@ class ReCogDriveAgent(AbstractAgent):
         return self
 
     @staticmethod
-    def vlm_questions(history_trajectory: torch.Tensor, high_command_one_hot: torch.Tensor) -> List[str]:
+    def vlm_questions(
+        history_trajectory: torch.Tensor,
+        high_command_one_hot: torch.Tensor,
+        num_poses: int = 8,
+        views: Optional[List[str]] = None,
+    ) -> List[str]:
+        if views:
+            images = "".join(f"<{view.replace('_', ' ').upper()} VIEW>:\n<image>\n" for view in views)
+            perception = f"1. Visual perception from {len(views)} surround camera views\n"
+        else:
+            images, perception = "<image>\n", "1. Visual perception from front camera view\n"
         if history_trajectory.ndim == 2:
             history_trajectory = history_trajectory.unsqueeze(0)
         if high_command_one_hot.ndim == 1:
@@ -249,11 +309,11 @@ class ReCogDriveAgent(AbstractAgent):
                 for j in range(sample.shape[0])
             ])
             questions.append(
-                "<image>\nAs an autonomous driving system, predict the vehicle's trajectory based on:\n"
-                "1. Visual perception from front camera view\n"
+                f"{images}As an autonomous driving system, predict the vehicle's trajectory based on:\n"
+                f"{perception}"
                 f"2. Historical motion context (last 4 timesteps):{history_str}\n"
                 f"3. Active navigation command: [{command_str.upper()}]\n"
-                "Output requirements:\n- Predict 8 future trajectory points\n"
+                f"Output requirements:\n- Predict {num_poses} future trajectory points\n"
                 "- Each point format: (x:float, y:float, heading:float)\n"
                 "- Use [PT, ...] to encapsulate the trajectory\n"
                 "- Maintain numerical precision to 2 decimal places"
@@ -280,7 +340,8 @@ class ReCogDriveAgent(AbstractAgent):
             if "vlm_question" in features:
                 questions = list(features["vlm_question"])
             else:
-                questions = self.vlm_questions(features["history_trajectory"], features["high_command_one_hot"])
+                questions = self.vlm_questions(features["history_trajectory"], features["high_command_one_hot"],
+                                               num_poses=self._trajectory_sampling.num_poses)
             if "num_patches" in features:
                 counts = features["num_patches"]
                 num_patches_list = [int(n) for n in (counts.tolist() if torch.is_tensor(counts) else counts)]
@@ -356,34 +417,30 @@ class ReCogDriveAgent(AbstractAgent):
     def compute_trajectory(self, agent_input: AgentInput) -> Trajectory:
         self.eval()
 
-        features: Dict[str, torch.Tensor] = {}
-        # build features
+        features: Dict[str, Any] = {}
         for builder in self.get_feature_builders():
             features.update(builder.compute_features(agent_input))
-        # add batch dimension
-        features = {k: v.unsqueeze(0) for k, v in features.items()}
+        transform = self.worker_transform()
+        if transform is not None:
+            features = transform(features)
+        # batch of one: per-image tiles and patch counts are already flat
+        batch = {}
+        for key, value in features.items():
+            if key == "num_patches":
+                batch[key] = value.tolist()
+            elif key == "pixel_values":
+                batch[key] = value
+            else:
+                batch[key] = value.unsqueeze(0) if torch.is_tensor(value) else [value]
 
         with torch.no_grad():
-            predictions = self.forward(features)
+            predictions = self.forward(batch)
             poses = predictions["pred_traj"].float().cpu().squeeze(0)
 
-        return Trajectory(poses)
+        return Trajectory(poses, self._trajectory_sampling)
 
     def compute_trajectory_vis(self, agent_input: AgentInput) -> Trajectory:
-        self.eval()
-
-        features: Dict[str, torch.Tensor] = {}
-        # build features
-        for builder in self.get_feature_builders():
-            features.update(builder.compute_features(agent_input))
-
-        # add batch dimension
-        features = {k: v.unsqueeze(0) for k, v in features.items()}
-
-        with torch.no_grad():
-            predictions = self.forward(features)
-            poses = predictions["pred_traj"].float().cpu().squeeze(0)
-        return Trajectory(poses)
+        return self.compute_trajectory(agent_input)
 
 
     def compute_loss(self, features: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor], predictions: Dict[str, torch.Tensor]) -> torch.Tensor:

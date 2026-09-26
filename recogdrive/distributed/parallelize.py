@@ -9,16 +9,34 @@ dtype together with their neighbours.
 
 import inspect
 import logging
+from collections.abc import Mapping
 from typing import Dict, Iterable, List, Set
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+import torch.utils._pytree as pytree
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 logger = logging.getLogger(__name__)
 
 DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
+
+
+def expose_output(module: nn.Module, args, output) -> None:
+    """Forward hook: FSDP2 (and DDP) hook the backward pass onto the tensors they find in the forward output through
+    torch pytree. A container pytree does not know (transformers' BatchFeature, SimpleNamespace) hides the loss, and
+    FSDP2 then leaves the parameters unsharded without ever reducing their gradients. Such a container type is
+    registered with pytree the first time a model returns it."""
+    kind = type(output)
+    if kind in pytree.SUPPORTED_NODES or torch.is_tensor(output) or output is None:
+        return
+    if isinstance(output, Mapping):
+        pytree.register_pytree_node(kind, lambda m: (list(m.values()), list(m.keys())),
+                                    lambda values, keys: kind(dict(zip(keys, values))))
+    elif hasattr(output, "__dict__"):
+        pytree.register_pytree_node(kind, lambda o: (list(vars(o).values()), list(vars(o))),
+                                    lambda values, keys: kind(**dict(zip(keys, values))))
 
 
 def base_module(module: nn.Module) -> nn.Module:
@@ -185,6 +203,7 @@ def set_prefetch(runs: List[List[nn.Module]], distance: int) -> int:
 def parallelize(model: nn.Module, args, ctx) -> nn.Module:
     """Returns the module to call for forward. For FSDP2 it is `model` itself, for DDP a wrapper."""
     model.to(ctx.device)
+    model.register_forward_hook(expose_output)  # before FSDP2 / DDP register theirs, so it runs first
     replicated = replicated_params(model, args.replicate_frozen)
     with torch.no_grad():
         for param in model.parameters():

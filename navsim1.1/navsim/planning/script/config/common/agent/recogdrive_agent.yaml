@@ -30,3 +30,9 @@ grpo_bc_coeff: 0.1
 grpo_sample_time: 8
 optimizer_type: adamw
 lr: 1e-4
+cameras: null  # cam_type=multi: views fed to the VLM, default every surround view the data source has
+front_short_side: 960  # cam_type=multi: front view rescaled to this short side
+side_short_side: 480  # cam_type=multi: other views
+vlm_max_length: null  # padded prompt length; null: 2800 single view, 8704 multi-view
+action_norm_min: null  # (x, y, heading) range mapped to [-1, 1]; null: NAVSIM 4 s statistics
+action_norm_max: null

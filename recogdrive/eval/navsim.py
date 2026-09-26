@@ -1,9 +1,10 @@
-"""NAVSIM PDMS (1.1) / EPDMS (2.0) through each tree's own scoring entry.
+"""NAVSIM PDMS (1.1) / EPDMS (2.0) through each tree's own scoring entry: navtest-style splits with the one-stage
+entry, the 2.0 two-stage splits (navhard_two_stage, navsafe_two_stage, ...) with the official two-stage one.
 
-During training the trainer's model generates the trajectories on the training GPUs (like validation), and
-the official scoring runs on CPU in the background with a replay agent, so evaluation never loads a second
-model onto the GPUs training uses. The final evaluation runs the trained agent once training has ended.
-The agent's eval forward returns `pred_traj`, (batch, poses, 3) in the ego frame at 0.5 s spacing.
+During training the trainer's model generates the trajectories on the training GPUs (like validation), second-stage
+synthetic scenes included, and the official scoring runs on CPU in the background with a replay agent, so evaluation
+never loads a second model onto the GPUs training uses. The final evaluation runs the trained agent once training
+has ended. The agent's eval forward returns `pred_traj`, (batch, poses, 3) in the ego frame at 0.5 s spacing.
 """
 
 import logging
@@ -13,17 +14,15 @@ from pathlib import Path
 from typing import Dict, List
 
 import torch
-import torch.distributed as dist
 from omegaconf import OmegaConf
 
 from recogdrive.eval.registry import SubprocessEvaluator, average_row, register
 
 logger = logging.getLogger(__name__)
 
-ENTRIES = {
-    "navsim1.1": ("run_pdm_score_recogdrive.py", True),   # torch.distributed across GPUs
-    "navsim2.0": ("run_pdm_score_one_stage.py", False),   # worker pool inside one process
-}
+# (script, torch.distributed across GPUs) of the final evaluation with the trained agent
+ENTRIES = {"navsim1.1": ("run_pdm_score_recogdrive.py", True), "navsim2.0": ("run_pdm_score_one_stage.py", False)}
+TWO_STAGE_ENTRY = "run_pdm_score.py"  # NAVSIM 2.0 two-stage EPDMS
 SCORE_ENTRIES = {"navsim1.1": "run_pdm_score.py", "navsim2.0": "run_pdm_score_one_stage.py"}
 POSE_INTERVAL_S = 0.5
 
@@ -40,9 +39,18 @@ class NavsimEvaluator(SubprocessEvaluator):
         super().__init__(cfg, section, output_dir)
         self.loader = None
 
+    def split(self) -> str:
+        return str(OmegaConf.select(self.section, "split") or "navtest")
+
     def split_overrides(self) -> List[str]:
-        split = OmegaConf.select(self.section, "split") or "navtest"
-        return [f"train_test_split={split}"] + [str(o) for o in (OmegaConf.select(self.section, "split_overrides") or [])]
+        return [f"train_test_split={self.split()}"] + [str(o) for o in (OmegaConf.select(self.section, "split_overrides") or [])]
+
+    def two_stage(self, root: Path) -> bool:
+        if root.name == "navsim2.0" and self.split().endswith("two_stage"):
+            return True
+        if self.split().endswith("two_stage"):
+            raise ValueError(f"split {self.split()} needs the NAVSIM 2.0 devkit, found {root}")
+        return False
 
     def overrides(self, config_dir: Path, out_dir: Path, tag: str, agent: str) -> List[str]:
         out = [
@@ -73,7 +81,7 @@ class NavsimEvaluator(SubprocessEvaluator):
         root = devkit_root()
         if root.name not in ENTRIES:
             raise ValueError(f"cannot pick a NAVSIM scoring entry for devkit {root}")
-        script, distributed = ENTRIES[root.name]
+        script, distributed = (TWO_STAGE_ENTRY, False) if self.two_stage(root) else ENTRIES[root.name]
         config_dir = out_dir / "config"
         self.agent_config(ckpt, config_dir)
         overrides = self.overrides(config_dir, out_dir, tag, "trained_agent")
@@ -92,7 +100,8 @@ class NavsimEvaluator(SubprocessEvaluator):
                               "trajectories_path": str(trajectories.resolve())}),
             config_dir / "agent" / "replay_agent.yaml",
         )
-        entry = str(root / "navsim" / "planning" / "script" / SCORE_ENTRIES[root.name])
+        script = TWO_STAGE_ENTRY if self.two_stage(root) else SCORE_ENTRIES[root.name]
+        entry = str(root / "navsim" / "planning" / "script" / script)
         return [sys.executable, entry, *self.overrides(config_dir, out_dir, tag, "replay_agent")]
 
     def release(self) -> None:
@@ -111,36 +120,25 @@ class NavsimEvaluator(SubprocessEvaluator):
             from hydra.core.hydra_config import HydraConfig
 
             from recogdrive.data import make_loader
-            from recogdrive.data.navsim import agent_inputs
+            from recogdrive.data.navsim import navsim_loader
             from recogdrive.data.registry import with_worker_transform
 
             split_cfg = compose(config_name=HydraConfig.get().job.config_name, overrides=self.split_overrides())
-            dataset = with_worker_transform(agent_inputs(split_cfg, trainer.agent), trainer.agent)
+            dataset = with_worker_transform(navsim_loader(split_cfg, trainer.agent, "test"), trainer.agent)
             self.loader = make_loader(dataset, trainer.cfg.dataloader.params, False, trainer.ctx.rank,
                                       trainer.ctx.world_size)
         return self.loader
 
-    @torch.no_grad()
     def generate(self, trainer, out_dir: Path) -> Path:
         """Trajectories of every split scene from the trainer's model, gathered into one pickle on rank 0."""
-        from recogdrive.data import DevicePrefetcher
+        from recogdrive.adapters import predict
 
-        model, ctx = trainer.model, trainer.ctx
-        was_training = model.training
-        model.eval()
-        mine: Dict[str, object] = {}
-        for features, _, tokens in DevicePrefetcher(self.eval_loader(trainer), ctx.device):
-            poses = model(features)["pred_traj"].float().cpu().numpy()
-            mine.update(zip(tokens, poses))
-        model.train(was_training)
-        gathered = [None] * ctx.world_size if ctx.is_main else None
-        dist.gather_object(mine, gathered, dst=0, group=ctx.gloo_group())
+        merged = predict(trainer.model, self.eval_loader(trainer), trainer.ctx)
         path = out_dir / "trajectories.pkl"
-        if ctx.is_main:
+        if trainer.ctx.is_main:
             from navsim.common.dataclasses import Trajectory
             from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
-            merged = {token: poses for part in gathered for token, poses in part.items()}
             trajectories = {
                 token: Trajectory(poses, TrajectorySampling(num_poses=len(poses), interval_length=POSE_INTERVAL_S))
                 for token, poses in merged.items()
@@ -161,5 +159,4 @@ class NavsimEvaluator(SubprocessEvaluator):
         csvs = sorted(out_dir.glob("*.csv"), key=lambda p: p.stat().st_mtime)
         if not csvs:
             raise ValueError(f"no score csv in {out_dir}")
-        row = average_row(csvs[-1])
-        return {"score": row["score"], "csv": str(csvs[-1])}
+        return {**average_row(csvs[-1]), "csv": str(csvs[-1])}

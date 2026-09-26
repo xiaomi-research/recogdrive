@@ -1,5 +1,7 @@
+import inspect
 from pathlib import Path
 
+from omegaconf import OmegaConf
 from torch.utils.data import Dataset
 
 from recogdrive.data.registry import register
@@ -8,12 +10,18 @@ from recogdrive.data.registry import register
 def scene_loader(cfg, agent, scene_filter):
     from navsim.common.dataloader import SceneLoader
 
+    kwargs = {}
+    # NAVSIM 2.0 two-stage splits (navhard / navsafe) add synthetic second-stage scenes
+    if getattr(scene_filter, "include_synthetic_scenes", False) and "synthetic_scenes_path" in inspect.signature(SceneLoader).parameters:
+        kwargs = {"synthetic_scenes_path": Path(OmegaConf.select(cfg, "synthetic_scenes_path")),
+                  "synthetic_sensor_path": Path(OmegaConf.select(cfg, "synthetic_sensor_path"))}
     return SceneLoader(
         sensor_blobs_path=Path(cfg.sensor_blobs_path),
         data_path=Path(cfg.navsim_log_path),
         scene_filter=scene_filter,
         sensor_config=agent.get_sensor_config(),
         load_image_path=getattr(agent, "load_image_path", False),
+        **kwargs,
     )
 
 
@@ -67,6 +75,9 @@ def agent_inputs(cfg, agent) -> AgentInputs:
 
 @register("navsim")
 def navsim_loader(cfg, agent, split: str):
+    """train / val: scenes of train_logs / val_logs; test: every scene of train_test_split without targets."""
+    if split == "test":
+        return agent_inputs(cfg, agent)
     if not getattr(cfg, "use_cache_without_dataset", False):
         return navsim_scene(cfg, agent, split)
     from navsim.planning.training.dataset import CacheOnlyDataset

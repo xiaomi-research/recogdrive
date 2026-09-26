@@ -96,11 +96,52 @@ sh scripts/train/run_recogdrive_internvl3_waypoint_il.sh \
   evaluator.name=navsim evaluator.metric_cache_path=/path/to/metric_cache
 ```
 
-The `train.*` block of `default_training.yaml` sets parallelism and precision (`strategy`, `precision`, `reshard_after_forward`, `hsdp_shard_size`, `replicate_frozen`, `compile`, `resume`). `data_loader` picks a registered dataset loader (`navsim`, `waymoe2e`, `nuscenes`); a new dataset registers a loader in `recogdrive/data/` and returns `(features, targets, token)` samples. The full ReCogDrive model is kept in three places with identical code apart from import lines: `recogdrive/models/recogdrive/` + `recogdrive/adapters/navsim/` (used by the training launchers via `agent._target_`), and `navsim1.1/navsim/agents/recogdrive/` and `navsim2.0/navsim/agents/recogdrive/` (used by the NAVSIM evaluation scripts through `agent=recogdrive_agent`). Change all three together; checkpoints load in either. The agent's `worker_transform()` (prompt, image path, InternVL tiles) runs in the dataloader workers for every data loader. `evaluator.*` scores checkpoints with the NAVSIM tree's own PDMS/EPDMS entry. Periodic evaluation (`evaluator.every_n_epochs`) generates the trajectories with the training model on the training GPUs and runs the official scoring on CPU in the background, so it never competes with training for GPUs; `evaluator.split_overrides` can restrict it to a scene subset. The final evaluation runs the trained agent after training has released the GPUs. Other GPU evaluators (VQA) wait for the end of training unless `evaluator.gpus` names GPUs training does not use. `optimizer_type=muon` works with FSDP2: each matrix is orthogonalized once, by one rank. The training log reports `step_ms`, `data_wait_ms`, and `samples/s`.
+The `train.*` block of `default_training.yaml` sets parallelism and precision (`strategy`, `precision`, `reshard_after_forward`, `hsdp_shard_size`, `replicate_frozen`, `compile`, `resume`). `data_loader` picks a registered dataset loader (`navsim`, `waymoe2e`, `nuscenes`, `mixture`); a new dataset registers a loader (see below) and returns `(features, targets, token)` samples. The full ReCogDrive model is kept in three places with identical code apart from import lines: `recogdrive/models/recogdrive/` + `recogdrive/adapters/navsim/` (used by the training launchers via `agent._target_`), and `navsim1.1/navsim/agents/recogdrive/` and `navsim2.0/navsim/agents/recogdrive/` (used by the NAVSIM evaluation scripts through `agent=recogdrive_agent`). Change all three together; checkpoints load in either. The agent's `worker_transform()` (prompt, image path, InternVL tiles) runs in the dataloader workers for every data loader. `evaluator.*` scores checkpoints with the NAVSIM tree's own PDMS/EPDMS entry. Periodic evaluation (`evaluator.every_n_epochs`) generates the trajectories with the training model on the training GPUs and runs the official scoring on CPU in the background, so it never competes with training for GPUs; `evaluator.split_overrides` can restrict it to a scene subset. The final evaluation runs the trained agent after training has released the GPUs. Other GPU evaluators (VQA) wait for the end of training unless `evaluator.gpus` names GPUs training does not use. `optimizer_type=muon` works with FSDP2: each matrix is orthogonalized once, by one rank. The training log reports `step_ms`, `data_wait_ms`, and `samples/s`.
+
+### Adapters, data sources, benchmarks, monitoring and inference
+
+**Adapters.** A model plugs in as a policy adapter (contract in `recogdrive/adapters/__init__.py`): `trajectory_sampling`, `forward` (training: an object with `.loss`; eval: `{"pred_traj": (B, poses, 3)}`), `compute_loss`, `get_optimizers`, `get_target_builders`, and optionally `worker_transform(image_augment=None)`. Data sources and benchmarks only see this contract, so adding either leaves the model alone. `recogdrive/adapters/template.py` (`agent=recogdrive_template`) is a minimal ego-state MLP planner to copy for a new model; it trains on every data source and every open-loop benchmark scores it.
+
+**Data sources.** Samples follow the contract in `recogdrive/data/registry.py`: 4 history poses at 0.5 s, the 8-dim ego status, `camera_paths` (every camera the source has, front first) and the future trajectory at the model's horizon, all in the current ego frame. A new source is a function decorated with `@register("name")`, in a module listed in `plugins=[my_pkg.my_source]` when it lives outside this repository. Several sources train together with per-source weights (each source's share of the draws follows its weight; validation concatenates the sources):
+
+```bash
+... data_loader=mixture \
+  'mixture=[{loader: navsim, weight: 1.0}, {loader: waymoe2e, weight: 0.5, overrides: {cache_path: /path/to/wod_cache}}]'
+```
+
+Training-split augmentation is off by default: `augment.history_dropout` and `augment.ego_status_dropout` zero the ego history / velocity and acceleration with the given probability (before the prompt is built), and `augment.color_jitter.p` (with `brightness`, `contrast`, `saturation`, `hue`), `augment.grayscale_p` and `augment.blur_p` are photometric image augmentations; geometric ones would move the scene against the labels.
+
+**Horizon and camera views.** `agent.trajectory_sampling.time_horizon` sets the prediction horizon (4 s = 8 poses by default, 5 s for the WOD-E2E metrics) and every data source cuts its targets to it. For 5 s widen the planner's output range, which by default stops at 65 m forward: `agent.action_norm_min=[-2.0,-40.0,-3.2] agent.action_norm_max=[160.0,40.0,3.2]`. `agent.cam_type=multi` feeds every surround view the source has (`agent.cameras` selects them), the front view rescaled to a 960-pixel short side and the others to 480; the padded prompt length `agent.vlm_max_length` defaults to 8704 for multi-view (WOD-E2E's 8 views take about 8240 tokens, nuScenes' 6 about 6450) and stays 2800 for the single-view recipe. NAVSIM multi-view reads scenes, or a cache rebuilt with `agent.cam_type=multi`; WOD-E2E needs a cache converted with `--views all`.
+
+**Benchmarks.** `evaluator.name` takes one benchmark or a list, `evaluator.<name>.*` overrides the shared keys for one of them, and results go to `eval/<benchmark>/<tag>/` and into the metrics as `eval/<benchmark>/<metric>`.
+
+| `evaluator.name` | Metrics | How it runs |
+| :--- | :--- | :--- |
+| `navsim` | PDMS (NAVSIM 1.1), EPDMS (2.0) on `evaluator.split`: `navtest`, or on 2.0 `navhard_two_stage` / `navsafe_two_stage` with the official two-stage entry | periodic: trajectories from the training model, official scoring on CPU; final: the trained agent |
+| `nuscenes` | L2 and collision rate at 1 / 2 / 3 s, ST-P3 (average up to t) and UniAD (at t) conventions | in the training process |
+| `waymoe2e` | Rater Feedback Score, ADE at 3 / 5 s (needs a 5 s horizon) | in the training process, on the rater-labelled frames |
+| `drivelm`, `lingoqa`, `drivebench` | VQA scores | child process |
+
+Two-stage splits read the synthetic second-stage scenes, and their metric cache must be built for the split. Point both the trajectory generation and the scoring entry at them; Hydra list elements containing `=` or `/` need quotes:
+
+```bash
+S="'synthetic_scenes_path=/data/navhard_two_stage/synthetic_scene_pickles','synthetic_sensor_path=/data/navhard_two_stage/sensor_blobs'"
+... evaluator.name=navsim evaluator.split=navhard_two_stage evaluator.metric_cache_path=/path/to/navhard_metric_cache \
+  "evaluator.split_overrides=[$S]" "evaluator.overrides=[$S]"
+```
+
+**Monitoring.** Every run writes `metrics.csv` (step, epoch, key, value: training loss, gradient norm, learning rate, step time, data wait, throughput, validation loss, benchmark metrics) and redraws `loss_curve.png` after each epoch. `monitor.wandb=online` or `offline` also logs to Weights & Biases (`pip install wandb`; a resumed run continues the same W&B run); without the package the run goes on with the CSV.
+
+**Inference.** `scripts/infer/run_recogdrive_infer.sh` runs a checkpoint on any registered data source and split and writes `predictions.json` (token to ego-frame poses) plus `vis/<token>.png` (front camera and bird's-eye view of history, ground truth and prediction) for the first `VISUALIZE` samples; `SPLIT=test` with the NAVSIM loader runs every scene of `train_test_split`:
+
+```bash
+CHECKPOINT=/path/to/epoch_0010.ckpt VLM_PATH=/path/to/vlm GPUS=2 \
+  bash scripts/infer/run_recogdrive_infer.sh data_loader=nuscenes nuscenes.root=/path/to/nuscenes nuscenes.version=v1.0-trainval
+```
 
 ### WaymoE2E Stage 2 / Stage 3 Training
 
-Build the cache from the raw WOD-E2E TFRecords (front camera center-cropped to NAVSIM's 16:9 so the VLM prompt keeps its 9-patch budget, 0.5 s history/target spacing in the current ego frame, intent as the driving command):
+Build the cache from the raw WOD-E2E TFRecords (front camera center-cropped to NAVSIM's 16:9 so the VLM prompt keeps its 9-patch budget, 0.5 s history spacing and targets up to 5 s in the current ego frame, intent as the driving command). `--views all` also writes the other seven cameras for multi-view training, and the rater-labelled validation frames get an `eval.gz` with the rater trajectories the Rater Feedback Score needs:
 
 ```bash
 PYTHONPATH=navsim1.1:. python -m recogdrive.data.waymoe2e --out ${WAYMOE2E_CACHE_PATH} --split training /path/to/wod_e2e/training_*.tfrecord-*
@@ -114,6 +155,7 @@ ${WAYMOE2E_CACHE_PATH}/training/<token>/features.gz
 ${WAYMOE2E_CACHE_PATH}/training/<token>/targets.gz
 ${WAYMOE2E_CACHE_PATH}/val/<token>/features.gz
 ${WAYMOE2E_CACHE_PATH}/val/<token>/targets.gz
+${WAYMOE2E_CACHE_PATH}/val/<token>/eval.gz      # rater-labelled frames only
 ```
 
 Run WaymoE2E stage 2 imitation learning:
