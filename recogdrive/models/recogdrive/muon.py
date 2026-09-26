@@ -5,6 +5,10 @@ momentum and AdamW run on the local shards (optimizer state stays DTensor for sh
 whole-matrix Newton-Schulz step, the shards of all matrices are packed into one buffer and all-gathered
 once; each rank orthogonalizes the matrices it owns, and one reduce-scatter returns every rank its rows of
 every result. Newton-Schulz runs in bf16, so exchanging bf16 is exact: the result matches one process.
+
+Parameters kept in a lower precision (bf16 working weights under DDP) get an fp32 master copy in the optimizer
+state, as in DMuon: momentum, weight decay and updates are fp32 on the master, which is then written back to the
+parameter. fp32 parameters are updated in place with no extra copy.
 """
 
 from __future__ import annotations
@@ -70,6 +74,8 @@ def update_scale(param: torch.Tensor) -> float:
 
 
 class Muon(Optimizer):
+    fp32_master = True  # updates of bf16 parameters go through fp32 master copies
+
     def __init__(
         self,
         params: Iterable[torch.nn.Parameter],
@@ -102,22 +108,38 @@ class Muon(Optimizer):
             decay = 1.0 - group["lr"] * group["weight_decay"]
             for param in matrices:
                 if decay != 1.0:
-                    local(param).mul_(decay)
+                    self.master(param).mul_(decay)
             updates = [self.momentum_update(param, group) for param in matrices]
             plain = [(p, u) for p, u in zip(matrices, updates) if not is_sharded(p)]
             sharded = [(p, u) for p, u in zip(matrices, updates) if is_sharded(p)]
             flat = [u.reshape(u.shape[0], -1) for _, u in plain]
             for (param, _), result in zip(plain, orthogonalize_all(flat, group["ns_steps"])):
-                param.add_(result.reshape(param.shape), alpha=-group["lr"] * update_scale(param))
+                self.master(param).add_(result.reshape(param.shape), alpha=-group["lr"] * update_scale(param))
             self.sharded_muon_step(sharded, group)
+            for param in params:
+                self.publish(param)
         return loss
+
+    def master(self, param: torch.Tensor) -> torch.Tensor:
+        """The fp32 tensor updates land on: the parameter's local shard, or its fp32 master copy."""
+        if param.dtype == torch.float32:
+            return local(param)
+        state = self.state[param]
+        if "master" not in state:
+            state["master"] = param.detach().float()  # a DTensor stays a DTensor, for sharded checkpoints
+        return local(state["master"])
+
+    def publish(self, param: torch.Tensor) -> None:
+        master = self.state[param].get("master")
+        if master is not None:
+            local(param).copy_(local(master))
 
     def momentum_update(self, param: torch.Tensor, group: dict) -> torch.Tensor:
         """Momentum on the local shard; returns the (Nesterov) update as a local tensor."""
         state = self.state[param]
         if "momentum_buffer" not in state:
-            state["momentum_buffer"] = torch.zeros_like(param.grad)
-        grad, buffer = local(param.grad), local(state["momentum_buffer"])
+            state["momentum_buffer"] = torch.zeros_like(param.grad, dtype=torch.float32)
+        grad, buffer = local(param.grad).float(), local(state["momentum_buffer"])
         buffer.lerp_(grad, 1.0 - group["momentum"])
         return grad.lerp(buffer, group["momentum"]) if group["nesterov"] else buffer
 
@@ -171,9 +193,9 @@ class Muon(Optimizer):
         dist.reduce_scatter_tensor(mine, scatter.view(-1), op=dist.ReduceOp.SUM, group=shard_group)
 
         for i, (param, _) in enumerate(items):
-            shard = local(param)
-            result = mine[offsets[i]:offsets[i] + shard.numel()].view_as(shard)
-            shard.add_(result, alpha=-group["lr"] * update_scale(param))
+            target = self.master(param)
+            result = mine[offsets[i]:offsets[i] + target.numel()].view_as(target)
+            target.add_(result, alpha=-group["lr"] * update_scale(param))
 
     def adamw_step(self, params: List[torch.Tensor], group: dict) -> None:
         if not params:
@@ -182,17 +204,17 @@ class Muon(Optimizer):
         for param in params:
             state = self.state[param]
             if "exp_avg" not in state:
-                state["exp_avg"] = torch.zeros_like(param.grad)
-                state["exp_avg_sq"] = torch.zeros_like(param.grad)
+                state["exp_avg"] = torch.zeros_like(param.grad, dtype=torch.float32)
+                state["exp_avg_sq"] = torch.zeros_like(param.grad, dtype=torch.float32)
             if not torch.is_tensor(state.get("step")):  # also converts int steps of older checkpoints
                 state["step"] = torch.tensor(float(state.get("step", 0)), device=local(param).device)
-            grads.append(local(param.grad))
+            grads.append(local(param.grad).float())
             exp_avgs.append(local(state["exp_avg"]))
             exp_avg_sqs.append(local(state["exp_avg_sq"]))
             steps.append(state["step"])
         beta1, beta2 = group["adamw_betas"]
         adamw(
-            [local(p) for p in params], grads, exp_avgs, exp_avg_sqs, [], steps,
+            [self.master(p) for p in params], grads, exp_avgs, exp_avg_sqs, [], steps,
             fused=grads[0].is_cuda, amsgrad=False, beta1=beta1, beta2=beta2, lr=group["lr"],
             weight_decay=group["weight_decay"], eps=group["adamw_eps"], maximize=False,
         )

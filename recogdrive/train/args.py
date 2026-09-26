@@ -7,7 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 @dataclass
 class TrainArgs:
     strategy: str = "fsdp"                      # fsdp | ddp
-    precision: str = "bf16"                     # compute dtype of FSDP-managed parameters: bf16 | fp32
+    precision: str = "bf16"                     # compute dtype of trainable parameters: bf16 | fp32 (ddp bf16 needs Muon)
     reshard_after_forward: Union[bool, int] = False
     hsdp_shard_size: Optional[int] = None       # shard within groups of this size, replicate across them
     fsdp_wrap_modules: List[str] = field(default_factory=list)
@@ -57,11 +57,8 @@ class TrainArgs:
     def validate(self, world_size: int) -> None:
         if self.strategy not in ("fsdp", "ddp"):
             raise ValueError(f"train.strategy must be fsdp or ddp, got {self.strategy!r}")
-        if self.strategy == "fsdp" and self.precision not in ("bf16", "fp32"):
-            raise ValueError(f"fsdp supports precision bf16 or fp32, got {self.precision!r}")
-        if self.strategy == "ddp" and self.precision != "fp32":
-            # DDP has no per-module precision policy; autocast would also change the frozen VLM's numerics.
-            raise ValueError("ddp runs parameters in their own dtype; set train.precision=fp32 or use fsdp")
+        if self.precision not in ("bf16", "fp32"):
+            raise ValueError(f"train.precision must be bf16 or fp32, got {self.precision!r}")
         if not isinstance(self.reshard_after_forward, bool) and self.reshard_after_forward < 1:
             raise ValueError("train.reshard_after_forward must be a bool or a positive shard group size")
         if self.hsdp_shard_size and world_size % self.hsdp_shard_size:

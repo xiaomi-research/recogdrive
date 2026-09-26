@@ -29,7 +29,9 @@ def load_weights(agent, ckpt: Path) -> None:
     state = torch.load(ckpt, map_location="cpu")["state_dict"]
     state = {k[len("agent."):] if k.startswith("agent.") else k: v for k, v in state.items()}
     missing, unexpected = agent.load_state_dict(state, strict=False)
-    missing = [k for k in missing if not k.startswith("backbone.")]  # the VLM loads from vlm_path
+    # checkpoints hold the trained parameters; frozen ones (the VLM from vlm_path, fixed planner parts) keep their values
+    trainable = {name for name, p in agent.named_parameters() if p.requires_grad}
+    missing = [k for k in missing if k in trainable]
     if missing or unexpected:
         raise ValueError(f"{ckpt} does not match the model: missing {missing[:5]}, unexpected {unexpected[:5]}")
 

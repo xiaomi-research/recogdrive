@@ -122,12 +122,17 @@ class ReCogDriveAgent(AbstractAgent):
         vlm_max_length: Optional[int] = None,
         action_norm_min: Optional[List[float]] = None,
         action_norm_max: Optional[List[float]] = None,
+        lora_rank: int = 0,
+        lora_alpha: float = 16.0,
+        lora_dropout: float = 0.05,
+        lora_targets: Optional[List[str]] = None,
     ):
         """cam_type 'multi' feeds `cameras` (default: every surround view the data source has) with the
         front view rescaled to front_short_side and the others to side_short_side; 'single' feeds the
         native-resolution front view. vlm_max_length (the padded prompt length) defaults to 2800 for single view and
         8704 for multi-view (WOD-E2E's 8 views take ~8240 tokens, nuScenes' 6 ~6450). The prediction horizon is
-        trajectory_sampling.num_poses."""
+        trajectory_sampling.num_poses. lora_rank > 0 trains LoRA adapters on the frozen VLM (lora_targets, default
+        the language model's attention and MLP projections); train_backbone fine-tunes the whole VLM instead."""
         super().__init__(trajectory_sampling) if AGENT_TAKES_SAMPLING else super().__init__()
         self._trajectory_sampling = self.trajectory_sampling = trajectory_sampling
         if cam_type not in ("single", "multi"):
@@ -147,6 +152,9 @@ class ReCogDriveAgent(AbstractAgent):
         self.reference_policy_checkpoint = reference_policy_checkpoint
         self.vlm_size = vlm_size
         self.train_backbone = train_backbone
+        if lora_rank and train_backbone:
+            raise ValueError("train_backbone fine-tunes the whole VLM and lora_rank adds adapters to a frozen one; set one")
+        self.vlm_trainable = bool(train_backbone or lora_rank)
         self.training_target = validate_training_target(training_target)
         self.vlm_hidden_size = vlm_hidden_size
         self.flow_noise_level = flow_noise_level
@@ -176,14 +184,14 @@ class ReCogDriveAgent(AbstractAgent):
                 device=device,
                 max_length=vlm_max_length or (8704 if self.cameras else 2800),
             )
-
-            if not self.train_backbone:
-                for p in self.backbone.parameters():
-                    p.requires_grad = False
+            if lora_rank:
+                self.backbone.add_lora(lora_rank, lora_alpha, lora_dropout, lora_targets)
+            for name, p in self.backbone.named_parameters():
+                p.requires_grad = train_backbone or (bool(lora_rank) and ".lora_" in name)
+            if not self.vlm_trainable:
                 self.backbone.eval()
-            else:
-                for p in self.backbone.parameters():
-                    p.requires_grad = True
+        elif lora_rank:
+            raise ValueError("lora_rank needs the online VLM: set cache_hidden_state=False and cache_mode=False")
 
         embedding_dims = {"large": 1536, "small": 384}
         if self.dit_type not in embedding_dims:
@@ -250,6 +258,7 @@ class ReCogDriveAgent(AbstractAgent):
                 if k2 in model_dict and v.shape == model_dict[k2].shape:
                     filtered_ckpt[k2] = v
             self.load_state_dict(filtered_ckpt, strict=False)
+            print(f"Loaded {len(filtered_ckpt)} of {len(ckpt)} checkpoint tensors from {self.checkpoint_path}")
 
     def get_sensor_config(self) -> SensorConfig:
         # the features read the current frame's camera paths only, never the lidar
@@ -273,8 +282,12 @@ class ReCogDriveAgent(AbstractAgent):
 
     def train(self, mode: bool = True):
         super().train(mode)
-        if self.backbone is not None and not self.train_backbone:
-            self.backbone.eval()
+        if self.backbone is not None:
+            # frozen parts of the VLM (all of it, or all but the LoRA layers) keep inference behaviour
+            for module in self.backbone.modules():
+                params = list(module.parameters())
+                if params and not any(p.requires_grad for p in params):
+                    module.eval()
         return self
 
     @staticmethod
@@ -386,7 +399,7 @@ class ReCogDriveAgent(AbstractAgent):
                 num_patches_list = [p.shape[0] for p in pixel_values_list]
                 pixel_values_cat = torch.cat(pixel_values_list, dim=0).cuda(non_blocking=True)
 
-            vlm_ctx = torch.no_grad() if not self.train_backbone else contextlib.nullcontext()
+            vlm_ctx = torch.no_grad() if not self.vlm_trainable else contextlib.nullcontext()
             with vlm_ctx:
                 outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
             last_hidden_state = outputs.hidden_states[-1]
@@ -454,8 +467,8 @@ class ReCogDriveAgent(AbstractAgent):
 
     def get_optimizers(self) -> Union[Optimizer, Dict[str, LRScheduler]]:
         params = list(self.action_head.parameters())
-        if self.backbone is not None and self.train_backbone:
-            params += list(self.backbone.parameters())
+        if self.backbone is not None and self.vlm_trainable:
+            params += [p for p in self.backbone.parameters() if p.requires_grad]
 
         if self.optimizer_type == "muon":
             optimizer = Muon(params, lr=self._lr, weight_decay=1e-4, adamw_betas=(0.9, 0.95))

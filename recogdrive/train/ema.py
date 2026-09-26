@@ -1,8 +1,9 @@
-"""Exponential moving average of the trainable parameters, kept in their training layout.
+"""Exponential moving average of the trainable parameters, kept in their training layout and in fp32.
 
 Under FSDP2 the average is stored as DTensors with the parameters' sharding: averaging a shard gives the
 shard of the average, so an update is one fused lerp per rank with no communication, and resume state is
-saved sharded by DCP like the optimizer's.
+saved sharded by DCP like the optimizer's. bf16 parameters (DDP) average into fp32, where decay-sized steps
+do not round away.
 """
 
 import contextlib
@@ -32,11 +33,12 @@ class EMA:
         self.names: List[str] = [name for name, _ in named]
         self.params: List[torch.Tensor] = [p for _, p in named]
         with torch.no_grad():
-            self.shadow: List[torch.Tensor] = [p.detach().clone() for p in self.params]
+            self.shadow: List[torch.Tensor] = [p.detach().float().clone() for p in self.params]
         self.average = get_ema_multi_avg_fn(decay)
+        self.held: List[torch.Tensor] = []
 
     def update(self) -> None:
-        self.average([local(s) for s in self.shadow], [local(p) for p in self.params], None)
+        self.average([local(s) for s in self.shadow], [local(p).float() for p in self.params], None)
 
     @torch.no_grad()
     def reset(self) -> None:
@@ -45,16 +47,21 @@ class EMA:
 
     @torch.no_grad()
     def swap(self) -> None:
+        """Loads the average into the parameters, holding the trained values; a second call puts them back. The
+        average itself is never rewritten, so bf16 parameters do not round it."""
         # FSDP2 keeps gathered parameters after a forward without backward (reshard_after_forward=False);
         # drop them so the next forward gathers the swapped shards.
         for module in self.model.modules():
             if isinstance(module, FSDPModule):
                 module.reshard()
-        for p, s in zip(self.params, self.shadow):
-            p_local, s_local = local(p), local(s)
-            held = p_local.clone()
-            p_local.copy_(s_local)
-            s_local.copy_(held)
+        if self.held:
+            for p, held in zip(self.params, self.held):
+                local(p).copy_(held)
+            self.held = []
+        else:
+            self.held = [local(p).clone() for p in self.params]
+            for p, s in zip(self.params, self.shadow):
+                local(p).copy_(local(s))
 
     @contextlib.contextmanager
     def swapped(self):

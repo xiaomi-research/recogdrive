@@ -29,6 +29,8 @@ except ImportError:
 
 from .utils.conversation import get_conv_template
 
+LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # Qwen2 / Qwen3 LLMs
+
 IMG_CONTEXT_TOKEN = '<IMG_CONTEXT>'
 IMG_START_TOKEN = '<img>'
 IMG_END_TOKEN = '</img>'
@@ -181,6 +183,14 @@ class RecogDriveBackbone(nn.Module):
             if module.__class__.__name__ == "InternAttention":
                 module._naive_attn = types.MethodType(sdpa_attn, module)
         print("Backbone attention: sdpa")
+
+    def add_lora(self, rank: int, alpha: float, dropout: float, targets: Optional[List[str]] = None) -> None:
+        """LoRA adapters (peft) on the VLM's linear layers named in `targets`, by default the language model's
+        attention and MLP projections (the vision towers name theirs differently). Base weights stay as loaded."""
+        from peft import LoraConfig, inject_adapter_in_model
+
+        config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, target_modules=list(targets or LORA_TARGETS))
+        inject_adapter_in_model(config, self.model)
 
     def configure_internvl(self):
         """Applies specific configurations required for the InternVL model."""

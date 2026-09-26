@@ -27,6 +27,7 @@ logger = logging.getLogger("recogdrive")
 EXTRA_METRICS = ("reward", "policy_loss", "bc_loss", "clip_frac", "ratio_mean")
 BACKBONE_PREFIX = "backbone."
 VLM_PREFIX = "backbone.model."
+ADAPTER_MARK = ".lora_"  # peft adapter parameter names
 EMA_SUFFIX = "-EMA"
 
 
@@ -118,6 +119,12 @@ class Trainer:
         else:
             self.optimizer = optim_cfg
         self.clip_params = [p for p in self.agent.parameters() if p.requires_grad]
+        low = [p for p in self.clip_params if p.dtype != torch.float32]
+        if low and not getattr(self.optimizer, "fp32_master", False):
+            raise ValueError(
+                f"{len(low)} trainable parameters are {low[0].dtype} and {type(self.optimizer).__name__} would update "
+                "them in that precision; use an optimizer with fp32 master weights (optimizer_type=muon), "
+                "train.strategy=fsdp, or train.precision=fp32")
 
     def resume(self) -> None:
         path = self.checkpointer.latest()
@@ -215,6 +222,8 @@ class Trainer:
             "perf/data_wait_ms": 1000.0 * waited / steps,
             "perf/samples_per_s": self.global_batch * steps / max(elapsed, 1e-9),
         })
+        if torch.cuda.is_available():
+            metrics["perf/max_mem_gib"] = torch.cuda.max_memory_allocated() / 2 ** 30
         self.monitor.log(metrics, self.global_step, epoch + 1)
         logger.info("[epoch %d step %d] %s", epoch + 1, self.global_step,
                     " ".join(f"{key.split('/', 1)[1]}={value:.4g}" for key, value in metrics.items()))
@@ -304,8 +313,10 @@ class Trainer:
         return tagged
 
     def write_ckpt(self, state: dict, path: Path) -> None:
-        weights = {k: v for k, v in state.items() if not k.startswith(BACKBONE_PREFIX)}
-        vlm = {k[len(VLM_PREFIX):]: v for k, v in state.items() if k.startswith(VLM_PREFIX)}
+        """Trained VLM weights go to a HuggingFace export next to the checkpoint; adapters on a frozen VLM (peft
+        LoRA) stay in the checkpoint, and the model re-injects them before loading."""
+        weights = {k: v for k, v in state.items() if not k.startswith(BACKBONE_PREFIX) or ADAPTER_MARK in k}
+        vlm = {k[len(VLM_PREFIX):]: v for k, v in state.items() if k.startswith(VLM_PREFIX) and ADAPTER_MARK not in k}
         torch.save({"state_dict": weights}, path)
         self.save_vlm(vlm, path)
 

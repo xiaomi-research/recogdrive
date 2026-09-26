@@ -96,13 +96,17 @@ class ResumeCheckpointer:
 
     def load(self, path: Path, model: nn.Module, optimizer, ema=None) -> dict:
         import torch.distributed.checkpoint as dcp
-        from torch.distributed.checkpoint.state_dict import StateDictOptions, set_state_dict
+        from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict, set_state_dict
 
         extra = torch.load(path / DONE_FILE, map_location="cpu", weights_only=False)
         saved_ema = ema if extra.get("ema") else None
         state = training_state(model, optimizer, saved_ema)
         dcp.load(state, checkpoint_id=str(path), process_group=self.ctx.gloo_group())
-        # Frozen parameters are not in the resume state; anything else missing is a real mismatch.
+        # Frozen parameters are not in the resume state; they load their own current values, since set_state_dict
+        # (torch 2.6) looks every parameter up when the model is wrapped in DDP.
+        for key, value in get_model_state_dict(model).items():
+            state["model"].setdefault(key, value)
+        # anything else missing is a real mismatch
         result = set_state_dict(
             model,
             optimizer,

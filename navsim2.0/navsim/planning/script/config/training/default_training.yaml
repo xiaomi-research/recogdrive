@@ -48,7 +48,7 @@ skip_validation: false
 
 train:
   strategy: fsdp  # fsdp | ddp
-  precision: bf16  # compute dtype of FSDP-managed parameters: bf16 | fp32 (ddp: fp32 only)
+  precision: bf16  # compute dtype: bf16 | fp32. fsdp keeps fp32 master shards; ddp bf16 keeps bf16 weights and needs Muon (fp32 masters)
   reshard_after_forward: false  # false: fastest; true: least memory, re-gathers in backward
   hsdp_shard_size: null  # multi-node: GPUs per node, shards within a node and replicates across nodes
   fsdp_wrap_modules: []  # block class names; empty: repeated blocks and HF _no_split_modules

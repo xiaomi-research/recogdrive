@@ -18,6 +18,12 @@ from recogdrive.eval.registry import SubprocessEvaluator, register
 class VqaEvaluator(SubprocessEvaluator):
     bench = ""
 
+    def __init__(self, cfg, section, output_dir: Path):
+        super().__init__(cfg, section, output_dir)
+        if OmegaConf.select(cfg, "agent.lora_rank"):
+            raise ValueError("VQA benchmarks load a HuggingFace VLM; LoRA adapters live in the planner checkpoint "
+                             "and would be skipped. Merge them into the VLM first.")
+
     def model_path(self, ckpt: Path) -> str:
         vlm = ckpt.with_name(ckpt.stem + "_vlm")
         return str(vlm) if vlm.is_dir() else str(OmegaConf.select(self.cfg, "agent.vlm_path"))

@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
 
 
+def fp32_average_hook(process_group, bucket):
+    """DDP comm hook: bf16 gradients are averaged in fp32, not summed in bf16."""
+    buffer = bucket.buffer()
+    wide = buffer.float().div_(dist.get_world_size(process_group))
+    future = dist.all_reduce(wide, group=process_group, async_op=True).get_future()
+    return future.then(lambda done: buffer.copy_(done.value()[0]))
+
+
 def expose_output(module: nn.Module, args, output) -> None:
     """Forward hook: FSDP2 (and DDP) hook the backward pass onto the tensors they find in the forward output through
     torch pytree. A container pytree does not know (transformers' BatchFeature, SimpleNamespace) hides the loss, and
@@ -172,13 +180,16 @@ def shard(module: nn.Module, replicated: Set[nn.Parameter], **kwargs) -> None:
     inside = {p for p in module.parameters() if p in replicated}
     if inside - {p for _, _, m in holders for p in m.parameters()}:
         raise RuntimeError("torch<2.7 can only keep whole frozen modules out of FSDP2; install torch>=2.7")
+    parents = {id(parent): (parent, list(parent._modules.items())) for parent, _, _ in holders}
     for parent, name, _ in holders:
         del parent._modules[name]
     try:
         fully_shard(module, **kwargs)
     finally:
-        for parent, name, child in holders:
-            parent._modules[name] = child
+        # restore the registration order: parameters() order decides e.g. which dtype a model reads from its first weight
+        for parent, children in parents.values():
+            parent._modules.clear()
+            parent._modules.update(children)
 
 
 def set_prefetch(runs: List[List[nn.Module]], distance: int) -> int:
@@ -205,10 +216,13 @@ def parallelize(model: nn.Module, args, ctx) -> nn.Module:
     model.to(ctx.device)
     model.register_forward_hook(expose_output)  # before FSDP2 / DDP register theirs, so it runs first
     replicated = replicated_params(model, args.replicate_frozen)
+    # FSDP2 keeps fp32 master shards and computes in args.precision; under DDP the parameters are the compute
+    # dtype, and an optimizer with fp32 master copies (Muon) keeps bf16 training exact
+    master = torch.float32 if args.strategy == "fsdp" else DTYPES[args.precision]
     with torch.no_grad():
         for param in model.parameters():
-            if param.requires_grad and param.is_floating_point() and param.dtype != torch.float32:
-                param.data = param.data.float()
+            if param.requires_grad and param.is_floating_point() and param.dtype != master:
+                param.data = param.data.to(master)
     managed = [p for p in model.parameters() if p not in replicated]
     if not any(p.requires_grad for p in managed):
         raise ValueError("no trainable parameters to optimize")
@@ -239,10 +253,12 @@ def parallelize(model: nn.Module, args, ctx) -> nn.Module:
             if "init_sync" in inspect.signature(DDP.__init__).parameters:
                 kwargs["init_sync"] = False
             wrapper = DDP(model, **kwargs)
+            if master != torch.float32:
+                wrapper.register_comm_hook(None, fp32_average_hook)
         if ctx.is_main:
             logger.info(
-                "parallel=ddp world=%d blocks=%d compiled_blocks=%d activation_checkpointing=%d replicated_frozen=%.2fGiB",
-                ctx.world_size, nblocks, ncompiled, wrapped_ac, replicated_gib,
+                "parallel=ddp world=%d precision=%s blocks=%d compiled_blocks=%d activation_checkpointing=%d "
+                "replicated_frozen=%.2fGiB", ctx.world_size, args.precision, nblocks, ncompiled, wrapped_ac, replicated_gib,
             )
         return wrapper
 
