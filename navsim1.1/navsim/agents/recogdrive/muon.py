@@ -1,27 +1,72 @@
-"""Muon for 2D weights; AdamW moments for 1D. Per-parameter state, ZeRO-1 safe."""
+"""Muon for 2D weights (higher-rank weights are flattened to rows x rest); AdamW for 1D. Per-parameter state.
+
+Same-shape matrices are orthogonalized as one batch. FSDP2 parameters are DTensor shards: weight decay,
+momentum and AdamW run on the local shards (optimizer state stays DTensor for sharded checkpoints). For the
+whole-matrix Newton-Schulz step, the shards of all matrices are packed into one buffer and all-gathered
+once; each rank orthogonalizes the matrices it owns, and one reduce-scatter returns every rank its rows of
+every result. Newton-Schulz runs in bf16, so exchanging bf16 is exact: the result matches one process.
+"""
 
 from __future__ import annotations
 
-from typing import Iterable, Optional, Tuple
+import math
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 from torch.optim import Optimizer
+from torch.optim.adamw import adamw
+
+try:
+    from torch.distributed.tensor import DTensor, Replicate, Shard
+except ImportError:  # torch without public DTensor: no FSDP2 parameters either
+    DTensor = Replicate = Shard = None
+
+EXCHANGE_ELEMENTS = 1 << 26  # full matrix elements per gather/scatter round (128 MiB in bf16)
 
 
 def orthogonalize_via_newton_schulz(grad: torch.Tensor, steps: int = 5) -> torch.Tensor:
+    """Newton-Schulz orthogonalization of a matrix, or of a batch of matrices in the last two dims."""
     # Keller Jordan Muon coefficients
     a, b, c = 3.4445, -4.7750, 2.0315
     matrix = grad.to(dtype=torch.bfloat16 if grad.dtype != torch.float64 else grad.dtype)
     transposed = matrix.size(-2) > matrix.size(-1)
     if transposed:
         matrix = matrix.mT
-    matrix = matrix / (matrix.norm() + 1e-7)
+    matrix = matrix / (matrix.norm(dim=(-2, -1), keepdim=True) + 1e-7)
     for _ in range(steps):
         gram = matrix @ matrix.mT
         matrix = a * matrix + (b * gram + c * gram @ gram) @ matrix
     if transposed:
         matrix = matrix.mT
     return matrix.to(dtype=grad.dtype)
+
+
+def orthogonalize_all(matrices: List[torch.Tensor], steps: int) -> List[torch.Tensor]:
+    """Newton-Schulz with same-shape matrices stacked into one batch."""
+    out: List[Optional[torch.Tensor]] = [None] * len(matrices)
+    by_shape: Dict[Tuple[int, ...], List[int]] = {}
+    for index, matrix in enumerate(matrices):
+        by_shape.setdefault(tuple(matrix.shape), []).append(index)
+    for indices in by_shape.values():
+        results = orthogonalize_via_newton_schulz(torch.stack([matrices[i] for i in indices]), steps)
+        for i, result in zip(indices, results):
+            out[i] = result
+    return out
+
+
+def is_sharded(tensor: torch.Tensor) -> bool:
+    return DTensor is not None and isinstance(tensor, DTensor)
+
+
+def local(tensor: torch.Tensor) -> torch.Tensor:
+    """The rank's own shard of a DTensor (a view), or the tensor itself."""
+    return tensor.to_local() if is_sharded(tensor) else tensor
+
+
+def update_scale(param: torch.Tensor) -> float:
+    rows = param.shape[0]
+    return max(1.0, rows / (param.numel() // rows)) ** 0.5
 
 
 class Muon(Optimizer):
@@ -51,42 +96,103 @@ class Muon(Optimizer):
     def step(self, closure: Optional[callable] = None):
         loss = closure() if closure is not None else None
         for group in self.param_groups:
-            lr = group["lr"]
-            weight_decay = group["weight_decay"]
-            for param in group["params"]:
-                if param.grad is None:
-                    continue
-                grad = param.grad
-                if weight_decay:
-                    param.mul_(1.0 - lr * weight_decay)
-                if param.ndim >= 2:
-                    self.muon_update(param, grad, group)
-                else:
-                    self.adamw_update(param, grad, group)
+            params = [p for p in group["params"] if p.grad is not None]
+            self.adamw_step([p for p in params if p.ndim < 2], group)
+            matrices = [p for p in params if p.ndim >= 2]
+            decay = 1.0 - group["lr"] * group["weight_decay"]
+            for param in matrices:
+                if decay != 1.0:
+                    local(param).mul_(decay)
+            updates = [self.momentum_update(param, group) for param in matrices]
+            plain = [(p, u) for p, u in zip(matrices, updates) if not is_sharded(p)]
+            sharded = [(p, u) for p, u in zip(matrices, updates) if is_sharded(p)]
+            flat = [u.reshape(u.shape[0], -1) for _, u in plain]
+            for (param, _), result in zip(plain, orthogonalize_all(flat, group["ns_steps"])):
+                param.add_(result.reshape(param.shape), alpha=-group["lr"] * update_scale(param))
+            self.sharded_muon_step(sharded, group)
         return loss
 
-    def muon_update(self, param: torch.Tensor, grad: torch.Tensor, group: dict) -> None:
+    def momentum_update(self, param: torch.Tensor, group: dict) -> torch.Tensor:
+        """Momentum on the local shard; returns the (Nesterov) update as a local tensor."""
         state = self.state[param]
         if "momentum_buffer" not in state:
-            state["momentum_buffer"] = torch.zeros_like(grad)
-        buffer = state["momentum_buffer"]
+            state["momentum_buffer"] = torch.zeros_like(param.grad)
+        grad, buffer = local(param.grad), local(state["momentum_buffer"])
         buffer.lerp_(grad, 1.0 - group["momentum"])
-        update = grad.lerp(buffer, group["momentum"]) if group["nesterov"] else buffer
-        update = orthogonalize_via_newton_schulz(update, steps=group["ns_steps"])
-        scale = max(1.0, param.size(-2) / param.size(-1)) ** 0.5
-        param.add_(update, alpha=-group["lr"] * scale)
+        return grad.lerp(buffer, group["momentum"]) if group["nesterov"] else buffer
 
-    def adamw_update(self, param: torch.Tensor, grad: torch.Tensor, group: dict) -> None:
-        state = self.state[param]
-        if "exp_avg" not in state:
-            state["exp_avg"] = torch.zeros_like(grad)
-            state["exp_avg_sq"] = torch.zeros_like(grad)
-            state["step"] = 0
-        state["step"] += 1
+    def sharded_muon_step(self, items: List[Tuple[torch.Tensor, torch.Tensor]], group: dict) -> None:
+        if not items:
+            return
+        mesh = items[0][0].device_mesh
+        for param, _ in items:
+            placements = param.placements
+            if placements[-1] != Shard(0) or not all(isinstance(p, Replicate) for p in placements[:-1]):
+                raise NotImplementedError(f"Muon expects FSDP2/HSDP row sharding, got {placements}")
+        shard_group = mesh.get_group(mesh.ndim - 1)
+        rounds: List[List[Tuple[torch.Tensor, torch.Tensor]]] = [[]]
+        size = 0
+        for item in items:
+            if rounds[-1] and size + item[0].numel() > EXCHANGE_ELEMENTS:
+                rounds.append([])
+                size = 0
+            rounds[-1].append(item)
+            size += item[0].numel()
+        for batch in rounds:
+            self.exchange_and_orthogonalize(batch, group, shard_group)
+
+    def exchange_and_orthogonalize(self, items, group: dict, shard_group) -> None:
+        rank, world = dist.get_rank(shard_group), dist.get_world_size(shard_group)
+        device = local(items[0][0]).device
+        rows = [param.shape[0] for param, _ in items]
+        cols = [param.numel() // param.shape[0] for param, _ in items]
+        chunks = [math.ceil(r / world) for r in rows]  # FSDP2 splits rows like torch.chunk
+        widths = [chunk * col for chunk, col in zip(chunks, cols)]
+        offsets = [0]
+        for width in widths:
+            offsets.append(offsets[-1] + width)
+        total = offsets[-1]
+
+        send = torch.zeros(total, dtype=torch.bfloat16, device=device)
+        for i, (_, update) in enumerate(items):
+            send[offsets[i]:offsets[i] + update.numel()] = update.reshape(-1)
+        gathered = torch.empty(world * total, dtype=torch.bfloat16, device=device)
+        dist.all_gather_into_tensor(gathered, send, group=shard_group)
+        gathered = gathered.view(world, total)
+
+        owned = [i for i in range(len(items)) if i % world == rank]
+        fulls = [gathered[:, offsets[i]:offsets[i + 1]].reshape(world * chunks[i], cols[i])[:rows[i]] for i in owned]
+        scatter = torch.zeros(world, total, dtype=torch.bfloat16, device=device)
+        for i, result in zip(owned, orthogonalize_all(fulls, group["ns_steps"])):
+            padded = torch.zeros(world * chunks[i], cols[i], dtype=torch.bfloat16, device=device)
+            padded[:rows[i]] = result
+            scatter[:, offsets[i]:offsets[i + 1]] = padded.view(world, widths[i])
+        mine = torch.empty(total, dtype=torch.bfloat16, device=device)
+        dist.reduce_scatter_tensor(mine, scatter.view(-1), op=dist.ReduceOp.SUM, group=shard_group)
+
+        for i, (param, _) in enumerate(items):
+            shard = local(param)
+            result = mine[offsets[i]:offsets[i] + shard.numel()].view_as(shard)
+            shard.add_(result, alpha=-group["lr"] * update_scale(param))
+
+    def adamw_step(self, params: List[torch.Tensor], group: dict) -> None:
+        if not params:
+            return
+        grads, exp_avgs, exp_avg_sqs, steps = [], [], [], []
+        for param in params:
+            state = self.state[param]
+            if "exp_avg" not in state:
+                state["exp_avg"] = torch.zeros_like(param.grad)
+                state["exp_avg_sq"] = torch.zeros_like(param.grad)
+            if not torch.is_tensor(state.get("step")):  # also converts int steps of older checkpoints
+                state["step"] = torch.tensor(float(state.get("step", 0)), device=local(param).device)
+            grads.append(local(param.grad))
+            exp_avgs.append(local(state["exp_avg"]))
+            exp_avg_sqs.append(local(state["exp_avg_sq"]))
+            steps.append(state["step"])
         beta1, beta2 = group["adamw_betas"]
-        state["exp_avg"].lerp_(grad, 1.0 - beta1)
-        state["exp_avg_sq"].lerp_(grad.square(), 1.0 - beta2)
-        bias1 = 1.0 - beta1 ** state["step"]
-        bias2 = 1.0 - beta2 ** state["step"]
-        denom = state["exp_avg_sq"].sqrt().div_(bias2 ** 0.5).add_(group["adamw_eps"])
-        param.addcdiv_(state["exp_avg"] / bias1, denom, value=-group["lr"])
+        adamw(
+            [local(p) for p in params], grads, exp_avgs, exp_avg_sqs, [], steps,
+            fused=grads[0].is_cuda, amsgrad=False, beta1=beta1, beta2=beta2, lr=group["lr"],
+            weight_decay=group["weight_decay"], eps=group["adamw_eps"], maximize=False,
+        )

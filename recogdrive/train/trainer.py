@@ -1,6 +1,7 @@
 """Training loop for VLA agents. Parallelism, data pipelines and evaluators are plugged in."""
 
 import contextlib
+import gc
 import json
 import logging
 import math
@@ -53,7 +54,7 @@ class Trainer:
         self.ema = None
         self.global_batch = 0
         self.checkpointer = ResumeCheckpointer(self.output_dir / "checkpoints", self.ctx, self.args.async_save)
-        self.evaluator = build_evaluator(cfg, self.output_dir) if self.ctx.is_main else None
+        self.evaluator = build_evaluator(cfg, self.output_dir)
         self.start_epoch = 0
         self.global_step = 0
         self.best_val = math.inf
@@ -66,9 +67,12 @@ class Trainer:
         self.model = parallelize(self.agent, self.args, self.ctx)
         self.build_optimizer()
         if self.args.ema_decay > 0:
-            self.ema = EMA(self.agent, self.args.ema_decay)
+            # EMA scaling rule: the same averaging horizon in samples at any global batch size.
+            decay = self.args.ema_decay ** (self.global_batch / self.args.ema_reference_batch)
+            self.ema = EMA(self.agent, decay)
             if self.ctx.is_main:
-                logger.info("ema decay=%s over %d trainable tensors", self.args.ema_decay, len(self.ema.params))
+                logger.info("ema decay=%.6f (%s at global batch %d, running %d) over %d trainable tensors", decay,
+                            self.args.ema_decay, self.args.ema_reference_batch, self.global_batch, len(self.ema.params))
         if self.args.resume:
             self.resume()
         try:
@@ -102,11 +106,6 @@ class Trainer:
             self.lr_scheduler = optim_cfg.get("lr_scheduler")
         else:
             self.optimizer = optim_cfg
-        if type(self.optimizer).__name__ == "Muon" and self.args.strategy == "fsdp" and self.ctx.world_size > 1:
-            raise ValueError(
-                "Muon orthogonalizes whole matrices but FSDP gives each rank a shard; "
-                "use train.strategy=ddp train.precision=fp32 with optimizer_type=muon"
-            )
         self.clip_params = [p for p in self.agent.parameters() if p.requires_grad]
 
     def resume(self) -> None:
@@ -237,27 +236,43 @@ class Trainer:
         improved = val_loss is not None and val_loss < self.best_val
         if improved:
             self.best_val = val_loss
-        self.export(epoch, train_loss, val_loss, improved)
+        tagged = self.export(epoch, train_loss, val_loss, improved)
+        self.evaluate(epoch, tagged)
         self.save_resume(epoch + 1)
 
-    def export(self, epoch: int, train_loss: float, val_loss: Optional[float], improved: bool) -> None:
-        """Writes last.ckpt (and last-EMA.ckpt), then the top-k and best copies; evaluators get the EMA ones."""
+    def evaluate(self, epoch: int, ckpt: Path) -> None:
+        """Periodic evaluation of the epoch's checkpoint; every rank takes part, with the model holding its weights."""
+        if self.evaluator is None:
+            return
+        if self.ctx.is_main:
+            for name, result in self.evaluator.poll():
+                logger.info("eval %s: %s", name, result)
+        every = self.evaluator.every_n_epochs
+        if every and (epoch + 1) % every == 0:
+            with self.averaged():
+                self.evaluator.during_training(self, ckpt, f"epoch_{epoch + 1:04d}")
+
+    def export(self, epoch: int, train_loss: float, val_loss: Optional[float], improved: bool) -> Path:
+        """Writes last.ckpt (and last-EMA.ckpt), then the top-k and best copies. Returns, on every rank, the
+        checkpoint evaluators score for this epoch: the tagged top-k copy, or last without validation (EMA twin
+        with EMA)."""
         suffixes = self.ckpt_suffixes()
         for suffix in suffixes:
             with self.averaged() if suffix else contextlib.nullcontext():
                 state = export_model_state(self.model)
             if self.ctx.is_main:
                 self.write_ckpt(state, self.output_dir / f"last{suffix}.ckpt")
+        tag = None if val_loss is None else f"epoch_{epoch + 1:04d}_val_{val_loss:.6f}"
+        tagged = self.output_dir / f"{tag or 'last'}{suffixes[-1]}.ckpt"
         if not self.ctx.is_main:
-            return
+            return tagged
         logger.info(
             "epoch %d/%d train/loss=%.4f val/loss=%s -> %s",
             epoch + 1, self.args.max_epochs, train_loss,
             "skipped" if val_loss is None else f"{val_loss:.4f}", self.output_dir / "last.ckpt",
         )
-        if val_loss is None:
-            return
-        tag = f"epoch_{epoch + 1:04d}_val_{val_loss:.6f}"
+        if tag is None:
+            return tagged
         for suffix in suffixes:
             last = self.output_dir / f"last{suffix}.ckpt"
             self.copy_ckpt(last, self.output_dir / f"{tag}{suffix}.ckpt")
@@ -266,11 +281,7 @@ class Trainer:
         self.prune_topk(val_loss, f"{tag}.ckpt")
         if improved:
             logger.info("new best val/loss=%.6f", val_loss)
-        if self.evaluator is not None:
-            for name, result in self.evaluator.poll():
-                logger.info("eval %s: %s", name, result)
-            if self.evaluator.every_n_epochs and (epoch + 1) % self.evaluator.every_n_epochs == 0:
-                self.evaluator.submit(self.output_dir / f"{tag}{suffixes[-1]}.ckpt", f"epoch_{epoch + 1:04d}")
+        return tagged
 
     def write_ckpt(self, state: dict, path: Path) -> None:
         weights = {k: v for k, v in state.items() if not k.startswith(BACKBONE_PREFIX)}
@@ -325,13 +336,26 @@ class Trainer:
         suffix = self.ckpt_suffixes()[-1]
         best = self.output_dir / f"best{suffix}.ckpt"
         final = best if best.is_file() else self.output_dir / f"last{suffix}.ckpt"
-        # Release the GPUs before the final evaluation runs in its own processes.
+        # Release the GPUs before the final evaluation runs in its own processes. torch internals behind the
+        # compiled blocks keep references to the weights, so their storage is dropped explicitly; FSDP2 shards
+        # (DTensor) go with their modules.
+        for tensor in [*self.agent.parameters(), *self.agent.buffers()]:
+            if not hasattr(tensor, "to_local"):
+                tensor.data = torch.empty(0, dtype=tensor.dtype, device=tensor.device)
         self.model = self.optimizer = self.lr_scheduler = self.ema = None
         self.agent = None
+        self.clip_params = []
+        self.train_loader = self.val_loader = None
+        if self.evaluator is not None:
+            self.evaluator.release()
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            if self.ctx.is_main:
+                logger.info("released GPU memory: %.2f GiB still allocated, %.2f GiB reserved",
+                            torch.cuda.memory_allocated() / 2 ** 30, torch.cuda.memory_reserved() / 2 ** 30)
         self.ctx.close()
-        if self.evaluator is not None:
+        if self.evaluator is not None and self.ctx.is_main:
             for tag, result in self.evaluator.finish(final):
                 logger.info("eval %s: %s", tag, result)
 

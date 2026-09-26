@@ -40,6 +40,12 @@ def build_evaluator(cfg: DictConfig, output_dir: Path):
 
 
 class SubprocessEvaluator:
+    """Built on every rank; only the main rank launches jobs.
+
+    During training, a job that needs GPUs runs at once only on GPUs training does not use
+    (`evaluator.gpus`); otherwise it waits until training has released its GPUs.
+    """
+
     def __init__(self, cfg: DictConfig, section: DictConfig, output_dir: Path):
         self.cfg = cfg
         self.section = section
@@ -47,6 +53,7 @@ class SubprocessEvaluator:
         self.every_n_epochs = int(OmegaConf.select(section, "every_n_epochs") or 0)
         self.on_end = bool(OmegaConf.select(section, "on_end", default=True))
         self.jobs: List[Tuple[str, subprocess.Popen, Path]] = []
+        self.deferred: List[Tuple[Path, str]] = []
 
     def command(self, ckpt: Path, out_dir: Path, tag: str) -> List[str]:
         raise NotImplementedError
@@ -61,15 +68,32 @@ class SubprocessEvaluator:
             env["CUDA_VISIBLE_DEVICES"] = str(gpus)
         return env
 
+    def launch(self, cmd: List[str], out_dir: Path, tag: str, env: Dict[str, str]) -> None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        log = open(out_dir / "eval.log", "w")
+        logger.info("eval %s started: %s", tag, " ".join(cmd))
+        proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+        log.close()
+        self.jobs.append((tag, proc, out_dir))
+
     def submit(self, ckpt: Path, tag: str) -> None:
         out_dir = self.root / tag
         out_dir.mkdir(parents=True, exist_ok=True)
-        cmd = self.command(Path(ckpt), out_dir, tag)
-        log = open(out_dir / "eval.log", "w")
-        logger.info("eval %s started: %s", tag, " ".join(cmd))
-        proc = subprocess.Popen(cmd, env=self.child_env(), stdout=log, stderr=subprocess.STDOUT)
-        log.close()
-        self.jobs.append((tag, proc, out_dir))
+        self.launch(self.command(Path(ckpt), out_dir, tag), out_dir, tag, self.child_env())
+
+    def release(self) -> None:
+        """Drops references into the training process (model, data) before training frees its GPUs."""
+
+    def during_training(self, trainer, ckpt: Path, tag: str) -> None:
+        """Called on every rank at an evaluation epoch, with the model holding the weights `ckpt` holds."""
+        if not trainer.ctx.is_main:
+            return
+        if OmegaConf.select(self.section, "gpus") is not None:
+            self.submit(ckpt, tag)
+            return
+        logger.info("eval %s waits for the end of training; set evaluator.gpus to GPUs training does not use "
+                    "to run it now", tag)
+        self.deferred.append((snapshot(Path(ckpt), self.root / tag), tag))
 
     def collect(self, block: bool) -> List[Tuple[str, Dict]]:
         done, running = [], []
@@ -93,9 +117,29 @@ class SubprocessEvaluator:
         return self.collect(block=False)
 
     def finish(self, final_ckpt: Optional[Path]) -> List[Tuple[str, Dict]]:
+        """Runs the deferred and the final evaluation one at a time, once training has freed its GPUs."""
+        results = self.collect(block=True)
+        queue = list(self.deferred)
         if self.on_end and final_ckpt is not None and Path(final_ckpt).is_file():
-            self.submit(final_ckpt, "final")
-        return self.collect(block=True)
+            queue.append((Path(final_ckpt), "final"))
+        for ckpt, tag in queue:
+            self.submit(ckpt, tag)
+            results += self.collect(block=True)
+        self.deferred = []
+        return results
+
+
+def snapshot(ckpt: Path, out_dir: Path) -> Path:
+    """Copy of a checkpoint (and its `_vlm` export) that later epochs cannot overwrite."""
+    import shutil
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    copy = out_dir / ckpt.name
+    shutil.copyfile(ckpt, copy)
+    vlm = ckpt.with_name(ckpt.stem + "_vlm")
+    if vlm.is_dir():
+        shutil.copytree(vlm, copy.with_name(copy.stem + "_vlm"), dirs_exist_ok=True)
+    return copy
 
 
 def average_row(csv_path: Path) -> Dict[str, float]:

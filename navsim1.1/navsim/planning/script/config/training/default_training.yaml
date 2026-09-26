@@ -45,6 +45,7 @@ train:
   async_save: true
   top_k: 5
   ema_decay: 0.0  # e.g. 0.999: validate, export (*-EMA.ckpt) and evaluate the moving average of trainable weights
+  ema_reference_batch: 128  # global batch ema_decay is tuned for; other batch sizes use decay ** (batch / 128)
 
 evaluator:
   name: null  # navsim
@@ -54,7 +55,8 @@ evaluator:
   metric_cache_path: null
   gpus: null  # CUDA_VISIBLE_DEVICES of the eval job; during training point it at GPUs training does not use
   nproc: null
-  overrides: []
+  split_overrides: []  # hydra overrides on train_test_split for the scored scenes, e.g. a scene_filter subset for fast periodic evaluation
+  overrides: []  # extra overrides of the scoring entry, e.g. worker settings
   vqa:  # drivelm / lingoqa / drivebench, run by python -m recogdrive.eval.vqa
     data: null  # DriveLM / DriveBench question json, LingoQA val.parquet
     image_root: null

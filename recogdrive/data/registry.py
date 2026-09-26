@@ -61,7 +61,10 @@ def build_split(cfg: Any, agent: Any, split: str):
             f"Unknown data loader {name!r}. Registered: {sorted(LOADERS)}. "
             "Register a loader for a new dataset; the trainer does not change."
         )
-    dataset = fn(cfg, agent, split)
+    return with_worker_transform(fn(cfg, agent, split), agent)
+
+
+def with_worker_transform(dataset, agent):
     transform = agent.worker_transform() if hasattr(agent, "worker_transform") else None
     return dataset if transform is None else TransformedDataset(dataset, transform)
 
