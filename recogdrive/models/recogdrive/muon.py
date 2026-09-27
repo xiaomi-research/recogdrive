@@ -129,6 +129,18 @@ class Muon(Optimizer):
             state["master"] = param.detach().float()  # a DTensor stays a DTensor, for sharded checkpoints
         return local(state["master"])
 
+    def load_state_dict(self, state_dict: dict) -> None:
+        """torch casts floating-point state to each parameter's dtype; the fp32 masters and moments of bf16
+        parameters are put back as saved."""
+        saved_ids = [i for group in state_dict["param_groups"] for i in group["params"]]
+        wide = {i: {k: v for k, v in state.items() if k != "step" and torch.is_tensor(v) and v.dtype == torch.float32}
+                for i, state in state_dict["state"].items()}
+        super().load_state_dict(state_dict)
+        for i, param in zip(saved_ids, [p for group in self.param_groups for p in group["params"]]):
+            if param.dtype != torch.float32:
+                for key, value in wide.get(i, {}).items():
+                    self.state[param][key] = value.to(device=param.device)
+
     def publish(self, param: torch.Tensor) -> None:
         master = self.state[param].get("master")
         if master is not None:

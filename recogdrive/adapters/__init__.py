@@ -7,7 +7,9 @@ A policy adapter is a torch.nn.Module with
                            training: an object with `.loss` (extra metrics as attributes are logged);
                            eval: {"pred_traj": (batch, num_poses, 3)} ego-frame poses (x, y, heading)
     compute_loss(features, targets, predictions)   validation loss from the eval forward
-    get_optimizers()       an optimizer, or {"optimizer": ..., "lr_scheduler": ...} (stepped once per epoch)
+    get_optimizers()       an optimizer, or {"optimizer": ..., "lr_scheduler": ...}; the scheduler advances once per epoch,
+                           or every optimizer step when given as {"scheduler": ..., "interval": "step"}. A
+                           get_optimizers(total_steps, steps_per_epoch) receives the training length in optimizer steps
     get_target_builders()  target transforms data sources apply (may be empty)
 
 and optionally

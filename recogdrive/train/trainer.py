@@ -2,6 +2,7 @@
 
 import contextlib
 import gc
+import inspect
 import json
 import logging
 import math
@@ -54,6 +55,7 @@ class Trainer:
         self.model = None
         self.optimizer = None
         self.lr_scheduler = None
+        self.lr_interval = "epoch"
         self.train_loader = None
         self.val_loader = None
         self.clip_params = []
@@ -108,16 +110,39 @@ class Trainer:
                 len(train_ds),
                 len(self.val_loader.dataset) if self.val_loader is not None else "skipped",
                 self.global_batch,
-                len(self.train_loader) // self.args.grad_accum,
+                len(self.train_loader) * self.inner_steps() // self.args.grad_accum,
             )
 
+    def inner_steps(self) -> int:
+        """Optimizer passes per batch: GRPO reuses one rollout for grpo_num_iterations updates."""
+        return int(getattr(self.agent, "grpo_num_iterations", 1) or 1) if getattr(self.agent, "grpo", False) else 1
+
     def build_optimizer(self) -> None:
-        optim_cfg = self.agent.get_optimizers()
+        """The model's optimizer and schedule; a get_optimizers(total_steps, steps_per_epoch) gets the training
+        length in optimizer steps. A scheduler given as {"scheduler", "interval": "step"} (Lightning's form)
+        advances every optimizer step, otherwise every epoch."""
+        steps_per_epoch = max(1, len(self.train_loader) * self.inner_steps() // self.args.grad_accum)
+        total_steps = steps_per_epoch * self.args.max_epochs
+        if self.args.max_steps:
+            total_steps = min(total_steps, self.args.max_steps)
+        get_optimizers = self.agent.get_optimizers
+        if "total_steps" in inspect.signature(get_optimizers).parameters:
+            optim_cfg = get_optimizers(total_steps=total_steps, steps_per_epoch=steps_per_epoch)
+        else:
+            optim_cfg = get_optimizers()
+        scheduler = None
         if isinstance(optim_cfg, dict):
             self.optimizer = optim_cfg["optimizer"]
-            self.lr_scheduler = optim_cfg.get("lr_scheduler")
+            scheduler = optim_cfg.get("lr_scheduler")
         else:
             self.optimizer = optim_cfg
+        self.lr_interval = "epoch"
+        if isinstance(scheduler, dict):
+            self.lr_interval = scheduler.get("interval", "epoch")
+            scheduler = scheduler["scheduler"]
+            if self.lr_interval not in ("step", "epoch"):
+                raise ValueError(f"lr scheduler interval must be step or epoch, got {self.lr_interval!r}")
+        self.lr_scheduler = scheduler
         self.clip_params = [p for p in self.agent.parameters() if p.requires_grad]
         low = [p for p in self.clip_params if p.dtype != torch.float32]
         if low and not getattr(self.optimizer, "fp32_master", False):
@@ -144,7 +169,7 @@ class Trainer:
     def train_loop(self) -> None:
         args, model, agent, device = self.args, self.model, self.agent, self.ctx.device
         use_grpo = bool(getattr(agent, "grpo", False))
-        inner_steps = int(getattr(agent, "grpo_num_iterations", 1) or 1) if use_grpo else 1
+        inner_steps = self.inner_steps()
         batches = DevicePrefetcher(self.train_loader, device)
         sampler = getattr(self.train_loader, "sampler", None)
         stop = False
@@ -176,6 +201,8 @@ class Trainer:
                         grad_norm = torch.nn.utils.clip_grad_norm_(self.clip_params, args.grad_clip, foreach=True)
                     self.optimizer.step()
                     self.optimizer.zero_grad(set_to_none=True)
+                    if self.lr_scheduler is not None and self.lr_interval == "step":
+                        self.lr_scheduler.step()
                     if self.ema is not None:
                         self.ema.update()
                     self.global_step += 1
@@ -190,7 +217,7 @@ class Trainer:
                     agent.clear_grpo_rollout()
                 if stop:
                     break
-            if self.lr_scheduler is not None:
+            if self.lr_scheduler is not None and self.lr_interval == "epoch":
                 self.lr_scheduler.step()
             train_loss = self.ctx.all_reduce_mean(loss_sum / max(loss_count, 1)).item()
             self.end_epoch(epoch, train_loss, use_grpo)

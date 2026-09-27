@@ -465,7 +465,12 @@ class ReCogDriveAgent(AbstractAgent):
             target_trajectory = self.target_to_waypoint(targets["trajectory"]).to(predictions["pred_traj"].device)
             return torch.nn.functional.l1_loss(predictions["pred_traj"], target_trajectory)
 
-    def get_optimizers(self) -> Union[Optimizer, Dict[str, LRScheduler]]:
+    def get_optimizers(
+        self, total_steps: Optional[int] = None, steps_per_epoch: Optional[int] = None
+    ) -> Union[Optimizer, Dict[str, LRScheduler]]:
+        """Warmup (3 epochs for imitation learning, none for GRPO) and cosine decay over the whole training. Given the
+        training length in optimizer steps (the recogdrive trainer) the schedule advances every step; without it
+        (Lightning) it advances every epoch over the recipe's 200 (IL) / 10 (GRPO) epochs."""
         params = list(self.action_head.parameters())
         if self.backbone is not None and self.vlm_trainable:
             params += [p for p in self.backbone.parameters() if p.requires_grad]
@@ -476,11 +481,13 @@ class ReCogDriveAgent(AbstractAgent):
             optimizer_cfg = DictConfig(dict(type="AdamW", lr=self._lr, weight_decay=1e-4, betas=(0.9, 0.95), fused=torch.cuda.is_available()))
             optimizer = build_from_configs(optim, optimizer_cfg, params=params)
         
-        if self.grpo:
-            scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=0.0, epochs=10, warmup_epochs=0)
-        else:
-            scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=1e-6, epochs=200, warmup_epochs=3)
-            
+        warmup_epochs, min_lr, recipe_epochs = (0, 0.0, 10) if self.grpo else (3, 1e-6, 200)
+        if total_steps:
+            scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=min_lr, total_steps=total_steps,
+                                    warmup_steps=warmup_epochs * (steps_per_epoch or 0))
+            return {'optimizer': optimizer, 'lr_scheduler': {'scheduler': scheduler, 'interval': 'step'}}
+        scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=min_lr, total_steps=recipe_epochs,
+                                warmup_steps=warmup_epochs)
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     @staticmethod
