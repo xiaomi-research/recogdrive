@@ -1,4 +1,6 @@
 """Muon for 2D weights (higher-rank weights are flattened to rows x rest); AdamW for 1D. Per-parameter state.
+Orthogonalized updates are scaled by 0.2 * sqrt(max(rows, cols)) to AdamW's update RMS (Moonlight, DMuon), so the
+learning rate and weight decay tuned for AdamW carry over.
 
 Same-shape matrices are orthogonalized as one batch. FSDP2 parameters are DTensor shards: weight decay,
 momentum and AdamW run on the local shards (optimizer state stays DTensor for sharded checkpoints). For the
@@ -68,9 +70,15 @@ def local(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.to_local() if is_sharded(tensor) else tensor
 
 
-def update_scale(param: torch.Tensor) -> float:
+def update_scale(param: torch.Tensor, matched_adamw_rms: Optional[float]) -> float:
+    """Moonlight's 0.2 * sqrt(max(A, B)) (as in DMuon / WALL-OSS): the orthogonalized update, whose element RMS is
+    about 1 / sqrt(max(A, B)), gets AdamW's update RMS (~0.2), so Muon reuses AdamW's learning rate and weight
+    decay. None keeps Keller Jordan's sqrt(max(1, A / B))."""
     rows = param.shape[0]
-    return max(1.0, rows / (param.numel() // rows)) ** 0.5
+    cols = param.numel() // rows
+    if matched_adamw_rms is None:
+        return max(1.0, rows / cols) ** 0.5
+    return matched_adamw_rms * math.sqrt(max(rows, cols))
 
 
 class Muon(Optimizer):
@@ -86,6 +94,7 @@ class Muon(Optimizer):
         ns_steps: int = 5,
         adamw_betas: Tuple[float, float] = (0.9, 0.95),
         adamw_eps: float = 1e-8,
+        matched_adamw_rms: Optional[float] = 0.2,
     ):
         defaults = dict(
             lr=lr,
@@ -95,6 +104,7 @@ class Muon(Optimizer):
             ns_steps=ns_steps,
             adamw_betas=adamw_betas,
             adamw_eps=adamw_eps,
+            matched_adamw_rms=matched_adamw_rms,
         )
         super().__init__(params, defaults)
 
@@ -114,7 +124,8 @@ class Muon(Optimizer):
             sharded = [(p, u) for p, u in zip(matrices, updates) if is_sharded(p)]
             flat = [u.reshape(u.shape[0], -1) for _, u in plain]
             for (param, _), result in zip(plain, orthogonalize_all(flat, group["ns_steps"])):
-                self.master(param).add_(result.reshape(param.shape), alpha=-group["lr"] * update_scale(param))
+                scale = update_scale(param, group.get("matched_adamw_rms", 0.2))
+                self.master(param).add_(result.reshape(param.shape), alpha=-group["lr"] * scale)
             self.sharded_muon_step(sharded, group)
             for param in params:
                 self.publish(param)
@@ -207,7 +218,7 @@ class Muon(Optimizer):
         for i, (param, _) in enumerate(items):
             target = self.master(param)
             result = mine[offsets[i]:offsets[i] + target.numel()].view_as(target)
-            target.add_(result, alpha=-group["lr"] * update_scale(param))
+            target.add_(result, alpha=-group["lr"] * update_scale(param, group.get("matched_adamw_rms", 0.2)))
 
     def adamw_step(self, params: List[torch.Tensor], group: dict) -> None:
         if not params:
