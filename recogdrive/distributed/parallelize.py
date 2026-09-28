@@ -139,10 +139,13 @@ def apply_activation_checkpointing(model: nn.Module, class_names: Iterable[str])
 
 
 def compile_blocks(runs: List[List[nn.Module]]) -> None:
-    # Compiling forward in place keeps FSDP hooks outside the graph and state_dict keys unchanged.
+    # Compiling the innermost forward in place keeps FSDP hooks and checkpoint wrappers outside the graph and
+    # state_dict keys unchanged. A graph traced through a checkpoint wrapper would also freeze the wrapped layer's
+    # forward, and transformers>=4.56 swaps that forward on every call to record output_hidden_states.
     for run in runs:
         for block in run:
-            block.forward = torch.compile(block.forward)
+            inner = base_module(block)
+            inner.forward = torch.compile(inner.forward)
 
 
 def broadcast_params(params: List[torch.Tensor]) -> None:
