@@ -115,6 +115,7 @@ class ReCogDriveAgent(AbstractAgent):
         grpo_kl_coef: float = 0.0,
         grpo_bc_coeff: float = 0.1,
         grpo_sample_time: int = 8,
+        grpo_reward_workers: Optional[int] = None,
         optimizer_type: str = "adamw",
         cameras: Optional[List[str]] = None,
         front_short_side: int = 960,
@@ -132,7 +133,9 @@ class ReCogDriveAgent(AbstractAgent):
         native-resolution front view. vlm_max_length (the padded prompt length) defaults to 2800 for single view and
         8704 for multi-view (WOD-E2E's 8 views take ~8240 tokens, nuScenes' 6 ~6450). The prediction horizon is
         trajectory_sampling.num_poses. lora_rank > 0 trains LoRA adapters on the frozen VLM (lora_targets, default
-        the language model's attention and MLP projections); train_backbone fine-tunes the whole VLM instead."""
+        the language model's attention and MLP projections); train_backbone fine-tunes the whole VLM instead.
+        grpo_reward_workers: processes per rank scoring the GRPO reward (None: half the CPU cores per rank, at most
+        16; 0: in the training process)."""
         super().__init__(trajectory_sampling) if AGENT_TAKES_SAMPLING else super().__init__()
         self._trajectory_sampling = self.trajectory_sampling = trajectory_sampling
         if cam_type not in ("single", "multi"):
@@ -226,7 +229,10 @@ class ReCogDriveAgent(AbstractAgent):
         if self.grpo:
             from recogdrive.adapters.navsim.reward import PDMReward
 
-            self.action_head.reward_fn = PDMReward(self.metric_cache_path)
+            if grpo_reward_workers is None:
+                ranks = int(os.getenv("LOCAL_WORLD_SIZE", "1"))
+                grpo_reward_workers = min(16, max(1, (os.cpu_count() or 2) // (2 * ranks)))
+            self.action_head.reward_fn = PDMReward(self.metric_cache_path, grpo_reward_workers)
         self.num_inference_samples = 1
         self.inference_selection_mode = "median"
 
@@ -345,6 +351,9 @@ class ReCogDriveAgent(AbstractAgent):
     ) -> Dict[str, torch.Tensor]:
         if reuse_rollout and self.grpo and self._grpo_rollout is not None:
             return self.action_head.grpo_loss_from_rollout(self._grpo_rollout)
+        if self.training and self.grpo and tokens_list is not None:
+            # metric caches load during the VLM forward
+            self.action_head.reward_fn.prefetch(list(tokens_list), self.grpo_sample_time)
 
         questions = None
         num_patches_list = None

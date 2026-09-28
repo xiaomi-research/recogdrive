@@ -28,6 +28,7 @@ grpo_clip_eps: 0.2
 grpo_kl_coef: 0.0
 grpo_bc_coeff: 0.1
 grpo_sample_time: 8
+grpo_reward_workers: null  # processes per rank scoring the reward; null: half the CPU cores per rank (max 16), 0: in-process
 optimizer_type: adamw
 lr: 1e-4
 cameras: null  # cam_type=multi: views fed to the VLM, default every surround view the data source has
