@@ -31,7 +31,7 @@ class PDMReward:
         self.scorer = PDMScorer(self.sampling, self.config)
 
     def __call__(self, trajectories: torch.Tensor, tokens: List[str]) -> torch.Tensor:
-        poses = trajectories.detach().cpu().numpy()
+        poses = trajectories.detach().float().cpu().numpy()  # numpy has no bf16
         groups: Dict[str, List[int]] = {}
         for i, token in enumerate(tokens):
             groups.setdefault(token, []).append(i)
