@@ -10,7 +10,7 @@ dtype together with their neighbours.
 import inspect
 import logging
 from collections.abc import Mapping
-from typing import Dict, Iterable, List, Set
+from typing import Dict, Iterable, List, Optional, Set
 
 import torch
 import torch.distributed as dist
@@ -116,7 +116,9 @@ def block_runs(model: nn.Module, wrap_classes: Iterable[str], skip: Set[nn.Param
     return runs
 
 
-def apply_activation_checkpointing(model: nn.Module, class_names: Iterable[str]) -> int:
+def apply_activation_checkpointing(model: nn.Module, class_names: Iterable[str], limit: Optional[int] = None) -> int:
+    """Recomputes the trainable modules of these classes in backward: all of them, or the first `limit` in module
+    order. Every block left out keeps its activations, trading memory for one less forward in backward."""
     names = set(class_names)
     if not names:
         return 0
@@ -131,11 +133,11 @@ def apply_activation_checkpointing(model: nn.Module, class_names: Iterable[str])
     for qualname, module in targets:
         if not any(qualname.startswith(parent + ".") for parent, _ in selected):
             selected.append((qualname, module))
-    for qualname, module in selected:
+    for qualname, module in selected[:limit]:
         parent_name, _, child = qualname.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
         setattr(parent, child, checkpoint_wrapper(module, checkpoint_impl=CheckpointImpl.NO_REENTRANT))
-    return len(selected)
+    return len(selected[:limit])
 
 
 def compile_blocks(runs: List[List[nn.Module]]) -> None:
@@ -232,7 +234,7 @@ def parallelize(model: nn.Module, args, ctx) -> nn.Module:
     if ctx.world_size > 1:
         broadcast_params(managed)
 
-    wrapped_ac = apply_activation_checkpointing(model, args.activation_checkpointing)
+    wrapped_ac = apply_activation_checkpointing(model, args.activation_checkpointing, args.activation_checkpointing_layers)
     runs = block_runs(model, args.fsdp_wrap_modules, replicated)
     compiled = block_runs(model, args.fsdp_wrap_modules, set()) if args.compile else []
     compile_blocks(compiled)

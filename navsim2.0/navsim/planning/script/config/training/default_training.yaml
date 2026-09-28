@@ -56,6 +56,7 @@ train:
   prefetch_distance: 1
   compile: true
   activation_checkpointing: []  # module class names recomputed in backward
+  activation_checkpointing_layers: null  # recompute only the first N of them (null: all); fewer is faster, uses more memory
   log_every: 10
   save_every_n_steps: 0
   resume: false

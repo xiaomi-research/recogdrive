@@ -15,6 +15,7 @@ class TrainArgs:
     prefetch_distance: int = 1
     compile: bool = True
     activation_checkpointing: List[str] = field(default_factory=list)
+    activation_checkpointing_layers: Optional[int] = None  # recompute only the first N matches (None: all)
     ddp_bucket_cap_mb: int = 25
     ddp_find_unused_parameters: bool = False
     ddp_static_graph: bool = False
@@ -65,6 +66,8 @@ class TrainArgs:
             raise ValueError(f"world size {world_size} is not divisible by train.hsdp_shard_size {self.hsdp_shard_size}")
         if self.grad_accum < 1:
             raise ValueError("gradient accumulation must be >= 1")
+        if self.activation_checkpointing_layers is not None and self.activation_checkpointing_layers < 1:
+            raise ValueError("train.activation_checkpointing_layers must be a positive layer count or null (all)")
         if not 0.0 <= self.ema_decay < 1.0:
             raise ValueError(f"train.ema_decay must be in [0, 1), got {self.ema_decay}")
         if self.ema_reference_batch < 1:
