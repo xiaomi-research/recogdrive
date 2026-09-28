@@ -4,7 +4,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from transformers import AutoConfig, AutoModel, AutoProcessor, AutoTokenizer
-from transformers.modeling_outputs import CausalLMOutputWithPast
 from PIL import Image
 
 try:
@@ -199,7 +198,11 @@ class RecogDriveBackbone(nn.Module):
         self.model.img_context_token_id = self.img_context_token_id
         print("InternVL model configured.")
 
-    def forward(self, pixel_values: Union[torch.Tensor, List[str]], questions: List[str], num_patches_list: Optional[List[int]] = None):
+    def forward(self, pixel_values: Union[torch.Tensor, List[str]], questions: List[str],
+                num_patches_list: Optional[List[int]] = None) -> torch.Tensor:
+        """The language model's final hidden states (B, tokens, hidden), the same values as `hidden_states[-1]` of
+        the chat model's forward. Only the decoder runs: its LM head would compute logits over every position that
+        nothing uses."""
         if not self.model:
             raise RuntimeError("Backbone model has not been initialized. Call initialize() on the agent first.")
         if self.model_type == "qwen":
@@ -237,19 +240,17 @@ class RecogDriveBackbone(nn.Module):
 
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
-        
-        num_patches = pixel_values.size(0)
-        image_flags = torch.tensor([1] * num_patches, dtype=torch.long)
 
-        return self.model(
-                pixel_values=pixel_values.to(model_dtype),
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                image_flags=image_flags.squeeze(-1),
-                output_hidden_states=True,
-                return_dict=True,
-        )
+        # InternVLChatModel.forward without the LM head: image features replace the <IMG_CONTEXT> embeddings in
+        # prompt order (masked_scatter instead of its boolean-index assignment, which syncs with the host)
+        language_model = self.model.language_model
+        embeds = language_model.get_input_embeddings()(input_ids)
+        vit_embeds = self.model.extract_feature(pixel_values.to(model_dtype))
+        selected = (input_ids == self.img_context_token_id).unsqueeze(-1)
+        embeds = embeds.masked_scatter(selected, vit_embeds.reshape(-1, embeds.shape[-1]).to(embeds.dtype))
+        return language_model.get_decoder()(
+            inputs_embeds=embeds, attention_mask=attention_mask, position_ids=position_ids, use_cache=False,
+        ).last_hidden_state
 
     def forward_qwen(self, image_paths: Union[torch.Tensor, List[str]], questions: List[str]):
         if process_vision_info is None:
@@ -292,9 +293,7 @@ class RecogDriveBackbone(nn.Module):
             return_tensors="pt",
         ).to(self.device)
 
-        return self.model(
-            **model_inputs,
-            output_hidden_states=True,
-            return_dict=True,
-        )
+        # The generation model's own hidden_states[-1]: for Qwen3-VL it is the last decoder layer before the final
+        # norm, unlike self.model.model's. logits_to_keep=1 leaves the LM head one position instead of every token.
+        return self.model(**model_inputs, output_hidden_states=True, use_cache=False, logits_to_keep=1).hidden_states[-1]
     

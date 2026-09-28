@@ -401,8 +401,7 @@ class ReCogDriveAgent(AbstractAgent):
 
             vlm_ctx = torch.no_grad() if not self.vlm_trainable else contextlib.nullcontext()
             with vlm_ctx:
-                outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
-            last_hidden_state = outputs.hidden_states[-1]
+                last_hidden_state = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
 
         status_feature = features["status_feature"]
         if status_feature.ndim == 1:

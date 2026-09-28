@@ -126,8 +126,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
 
             if isinstance(pixel_values_cat, torch.Tensor):
                 pixel_values_cat = pixel_values_cat.cuda()
-            outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
-            last_hidden_state = outputs.hidden_states[-1]
+            last_hidden_state = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
 
             return {
                 "history_trajectory": history_trajectory.cpu(),
