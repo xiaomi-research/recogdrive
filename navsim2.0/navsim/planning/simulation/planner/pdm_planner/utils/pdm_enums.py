@@ -1,5 +1,6 @@
 # TODO: Move & rename this file for common usage (not specific for PDM)
 # TODO: Remove @classmethod + @property decorators (deprecated in Python 3.13)
+import functools
 from enum import IntEnum
 
 
@@ -19,6 +20,7 @@ class StateIndex:
     _ANGULAR_ACCELERATION = 10
 
     @classmethod
+    @functools.lru_cache(maxsize=None)  # called per state array; dir() on every call was ~10% of PDM scoring
     def size(cls):
         valid_attributes = [
             attribute

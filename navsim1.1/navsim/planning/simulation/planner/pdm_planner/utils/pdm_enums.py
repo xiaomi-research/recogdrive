@@ -1,3 +1,4 @@
+import functools
 from enum import IntEnum
 
 
@@ -17,6 +18,7 @@ class StateIndex:
     _ANGULAR_ACCELERATION = 10
 
     @classmethod
+    @functools.lru_cache(maxsize=None)  # called per state array; dir() on every call was ~10% of PDM scoring
     def size(cls):
         valid_attributes = [
             attribute

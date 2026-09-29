@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import shapely.vectorized
 from shapely.strtree import STRtree
-from shapely.geometry import Point
+from shapely.geometry import Point, box
 
 from nuplan.common.maps.abstract_map import AbstractMap, MapObject
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
@@ -205,8 +205,10 @@ class PDMDrivableMap(PDMOccupancyMap):
         flattened_points = points.reshape(-1, 2)
 
         output = np.zeros((len(self._geometries), len(flattened_points)), dtype=bool)
-        for i, polygon in enumerate(self._geometries):
-            output[i] = shapely.vectorized.contains(polygon, flattened_points[:, 0], flattened_points[:, 1])
+        x, y = flattened_points[:, 0], flattened_points[:, 1]
+        # only polygons whose bounds meet the points' can contain any of them; the others stay False
+        for i in self._str_tree.query(box(x.min(), y.min(), x.max(), y.max())):
+            output[i] = shapely.vectorized.contains(self._geometries[i], x, y)
 
         output_shape = (len(self._geometries),) + input_shape
         return output.reshape(output_shape)
