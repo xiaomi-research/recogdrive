@@ -182,6 +182,27 @@ class PDMScorer:
 
         return final_scores
 
+    def pair_scores(self) -> npt.NDArray[np.float64]:
+        """
+        After score_proposals: the scores of proposals 1.. as if each had been scored with proposal 0 alone. Every
+        metric but progress is computed per proposal; progress is normalized by the better of the pair.
+        :return: array containing the score of each proposal but the first
+        """
+        multiplicate_metric_scores = self._multi_metrics.prod(axis=0)
+        raw_progress = self._progress_raw * multiplicate_metric_scores
+        max_raw_progress = np.maximum(raw_progress[0], raw_progress[1:])
+        normalized_progress = np.where(
+            max_raw_progress > self._config.progress_distance_threshold,
+            raw_progress[1:] / np.where(max_raw_progress > 0.0, max_raw_progress, 1.0),
+            (multiplicate_metric_scores[1:] != 0.0).astype(np.float64),
+        )
+        weighted_metrics = self._weighted_metrics[:, 1:].copy()
+        weighted_metrics[WeightedMetricIndex.PROGRESS] = normalized_progress
+        weighted_metrics_array = self._config.weighted_metrics_array
+        weighted_metric_scores = (weighted_metrics * weighted_metrics_array[..., None]).sum(axis=0)
+        weighted_metric_scores /= weighted_metrics_array.sum()
+        return multiplicate_metric_scores[1:] * weighted_metric_scores
+
     def _reset(
         self,
         states: npt.NDArray[np.float64],

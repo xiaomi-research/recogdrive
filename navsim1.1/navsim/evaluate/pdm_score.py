@@ -87,10 +87,9 @@ def pdm_pred_scores(
     simulator: PDMSimulator,
     scorer: PDMScorer,
 ) -> List[float]:
-    """Simulate all preds with the PDM ref once; score each pred vs ref alone.
-
-    Progress is normalized inside a (ref, pred) pair. Scoring G preds together
-    would change the score vs the original one-traj `pdm_score()`.
+    """Each pred's one-trajectory `pdm_score()`: the PDM ref and all preds are simulated and scored in one pass
+    (every metric but progress is per trajectory), and each pred's progress is normalized inside its
+    (ref, pred) pair, which a plain joint scoring would not do.
     """
     if not model_trajectories:
         return []
@@ -108,19 +107,14 @@ def pdm_pred_scores(
     ]
     trajectory_states = np.stack([pdm_states, *pred_states], axis=0)
     simulated_states = simulator.simulate_proposals(trajectory_states, initial_ego_state)
-    pdm_sim = simulated_states[0:1]
-    scores: List[float] = []
-    for idx in range(1, simulated_states.shape[0]):
-        pair = np.concatenate([pdm_sim, simulated_states[idx : idx + 1]], axis=0)
-        pair_scores = scorer.score_proposals(
-            pair,
-            metric_cache.observation,
-            metric_cache.centerline,
-            metric_cache.route_lane_ids,
-            metric_cache.drivable_area_map,
-        )
-        scores.append(float(pair_scores[1]))
-    return scores
+    scorer.score_proposals(
+        simulated_states,
+        metric_cache.observation,
+        metric_cache.centerline,
+        metric_cache.route_lane_ids,
+        metric_cache.drivable_area_map,
+    )
+    return [float(score) for score in scorer.pair_scores()]
 
 
 def pdm_score(
