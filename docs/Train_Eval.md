@@ -241,7 +241,7 @@ This uses a Flow-GRPO-style SDE rollout to obtain per-step log-probabilities, th
 
 Before running, modify the script parameters as needed  according to your hardware and training requirements. This command will start RL training immediately after configuration.
 
-The PDM reward of the sampled trajectories is computed on the CPU. `agent.grpo_reward_workers` processes per rank do it (default: half the CPU cores per rank, at most 16; 0 computes it in the training process): they load the batch's metric caches while the VLM runs and score its trajectories in parallel, with the same scores.
+The PDM reward of the sampled trajectories is computed on the CPU. `agent.grpo_reward_workers` processes per rank do it (default: half the CPU cores per rank, at most 16; 0 computes it in the training process): they load the batch's metric caches while the VLM runs and score its trajectories in parallel, with the same scores. The planner projects a sample's VLM features into cross-attention keys and values once for all its sampled trajectories and denoising steps, so RL memory barely grows with the group size: on an RTX 3090 a batch of 4 samples x 8 trajectories peaks at 5.8 GiB (21 GiB before) and 8 samples fit in 7.1 GiB.
 
 
 ### Step 3: Configure and Run Evaluation
