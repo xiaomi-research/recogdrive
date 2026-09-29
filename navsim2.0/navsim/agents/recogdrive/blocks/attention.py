@@ -56,10 +56,13 @@ class Attention(nn.Module):
         B, N_q, _ = hidden_states.shape
         context = hidden_states if encoder_hidden_states is None else encoder_hidden_states
         is_self_attention = encoder_hidden_states is None
+        # Cross-attention context may have fewer rows than the queries: row i serves query rows [i*r, (i+1)*r),
+        # r = B // rows, so its keys and values are projected once for all of them.
+        groups = context.shape[0]
 
         q = self.to_q(hidden_states).view(B, N_q, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.to_k(context).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.to_v(context).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.to_k(context).view(groups, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.to_v(context).view(groups, -1, self.num_heads, self.head_dim).transpose(1, 2)
 
         q, k = self.q_norm(q), self.k_norm(k)
         
@@ -70,6 +73,9 @@ class Attention(nn.Module):
             
             if is_self_attention:
                 k = (k * cos) + (rotate_half(k) * sin)
+
+        if groups != B:  # the query rows sharing a context row attend as one sequence (queries are independent)
+            q = q.transpose(1, 2).reshape(groups, -1, self.num_heads, self.head_dim).transpose(1, 2)
 
         if hasattr(F, 'scaled_dot_product_attention'):
             x = F.scaled_dot_product_attention(

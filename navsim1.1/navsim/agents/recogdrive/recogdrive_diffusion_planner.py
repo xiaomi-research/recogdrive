@@ -99,8 +99,8 @@ class GRPOConfig:
 
 @dataclass
 class GRPORollout:
-    """Cached generation for μ inner updates. π_old is old_logprobs, not a weight copy."""
-    vl_rep: torch.Tensor
+    """Cached generation for μ inner updates. π_old is old_logprobs, not a weight copy. vl holds one row per
+    sample; the *_rep inputs and chains one per trajectory, a sample's G trajectories in a row."""
     his_rep: torch.Tensor
     status_rep: torch.Tensor
     vl: torch.Tensor
@@ -445,7 +445,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             pos_ids = torch.arange(action_features.shape[1], device=x.device)
             action_features = action_features + self.position_embedding(pos_ids)
 
-        vl_features_mean = vl_features.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
+        vl_features_mean = vl_features.mean(1).repeat_interleave(his_traj_features.shape[0] // vl_features.shape[0], 0)
+        vl_features_mean = vl_features_mean.unsqueeze(1).repeat(1, self.config.action_horizon, 1)
         fused_input = self.fusion_projector(
             torch.cat((his_traj_features, vl_features_mean, action_features), dim=2)
         )
@@ -516,7 +517,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             pos_ids = torch.arange(action_features.shape[1], device=actions.device)
             action_features = action_features + self.position_embedding(pos_ids)
 
-        vl_features_mean = vl_features.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
+        vl_features_mean = vl_features.mean(1).repeat_interleave(his_traj_features.shape[0] // vl_features.shape[0], 0)
+        vl_features_mean = vl_features_mean.unsqueeze(1).repeat(1, self.config.action_horizon, 1)
         fused_input = self.fusion_projector(
             torch.cat((his_traj_features, vl_features_mean, action_features), dim=2)
         )
@@ -784,7 +786,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         This method reuses the logic from get_action but stores intermediate steps.
 
         Args:
-            vl_features (torch.Tensor): Vision-language features from the backbone.
+            vl_features (torch.Tensor): Vision-language features from the backbone, one row per sample; the
+                trajectories (rows of the other inputs) of a sample follow each other.
             his_traj_features (torch.Tensor): Encoded historical trajectory features.
             ego_status_features (torch.Tensor): Encoded ego status features.
             init_actions (Optional[torch.Tensor]): An initial trajectory to start from.
@@ -796,7 +799,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 - The full denoising chain as a tensor of shape (B, K+1, H, D).
                 - The final, denormalized trajectory of shape (B, H, D).
         """
-        B, D = vl_features.shape[0], self.config.action_dim
+        B, D = his_traj_features.shape[0], self.config.action_dim
         device, dtype = vl_features.device, vl_features.dtype
         
         vl_features = self.feature_encoder(vl_features)
@@ -913,7 +916,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         )
 
         conditioning_embeds = {
-            'vl_features': vl_features,
             'his_traj_features': his_traj_features,
             'ego_status_features': ego_status_features
         }
@@ -923,6 +925,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             batched_conditioning[key] = value.unsqueeze(1).repeat(
                 1, num_denoising_steps, *(1,) * (value.ndim - 1)
             ).flatten(0, 1)
+        # Not repeated: every denoising step (and trajectory) of a sample shares its keys and values (Attention).
+        batched_conditioning['vl_features'] = vl_features
 
         x_t = chains[:, :-1].reshape(-1, H, D)
         x_t_minus_1 = chains[:, 1:].reshape(-1, H, D)
@@ -1001,16 +1005,16 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.set_frozen_modules_to_eval_mode()
         B = vl_features.shape[0]
         G = int(sample_time or self.sample_time)
-        vl_rep = vl_features.repeat_interleave(G, 0)
+        # the G trajectories of a sample follow each other and share its (unrepeated) VLM features
         his_rep = action_input.his_traj.repeat_interleave(G, 0)
         status_rep = action_input.status_feature.repeat_interleave(G, 0)
 
         with torch.no_grad():
             chains, trajs = self.sample_chain(
-                vl_rep, his_rep, status_rep, deterministic=False
+                vl_features, his_rep, status_rep, deterministic=False
             )
             old_logprobs = self.flat_step_logprob(
-                self.get_logprobs(vl_rep, his_rep, status_rep, chains, deterministic=False)
+                self.get_logprobs(vl_features, his_rep, status_rep, chains, deterministic=False)
             )
 
         tokens_rep = [tok for tok in tokens_list for _ in range(G)]
@@ -1042,11 +1046,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if self.kl_coef > 0:
             with torch.no_grad():
                 ref_logprobs = self.flat_step_logprob(
-                    self.ref_policy.get_logprobs(vl_rep, his_rep, status_rep, chains, deterministic=False)
+                    self.ref_policy.get_logprobs(vl_features, his_rep, status_rep, chains, deterministic=False)
                 )
 
         return GRPORollout(
-            vl_rep=vl_rep.detach(),
             his_rep=his_rep.detach(),
             status_rep=status_rep.detach(),
             vl=vl_features.detach(),
@@ -1069,7 +1072,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.set_frozen_modules_to_eval_mode()
         log_probs = self.flat_step_logprob(
             self.get_logprobs(
-                rollout.vl_rep, rollout.his_rep, rollout.status_rep, rollout.chains, deterministic=False
+                rollout.vl, rollout.his_rep, rollout.status_rep, rollout.chains, deterministic=False
             )
         )
         policy_loss, ratio = clipped_pg_loss(
