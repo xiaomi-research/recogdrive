@@ -343,7 +343,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     filtered_ckpt[k2] = v
                 else:
                     print(f"Skip loading '{k}' → '{k2}' (checkpoint shape {tuple(v.shape)} vs model shape {tuple(model_dict.get(k2, v).shape)})")
-            self.load_state_dict(filtered_ckpt, strict=True)
+            # exported checkpoints hold the trainable weights only; frozen ones (eta) keep their configured values
+            missing = self.load_state_dict(filtered_ckpt, strict=False).missing_keys
+            trainable = {name for name, p in self.named_parameters() if p.requires_grad}
+            if trainable & set(missing):
+                raise RuntimeError(f"reference policy checkpoint lacks trainable weights: {sorted(trainable & set(missing))[:5]}")
         except FileNotFoundError:
             print(f"Warning: GRPO checkpoint not found at {cfg.reference_policy_checkpoint}. Skipping loading.")
         
