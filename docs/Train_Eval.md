@@ -109,7 +109,7 @@ The `train.*` block of `default_training.yaml` sets parallelism and precision (`
   'mixture=[{loader: navsim, weight: 1.0}, {loader: waymoe2e, weight: 0.5, overrides: {cache_path: /path/to/wod_cache}}]'
 ```
 
-On several GPUs a step waits for its slowest rank, and a source's images tile differently (NAVSIM's front view makes 9 InternVL tiles, WOD-E2E's 3). When the sources' tile counts differ, each step's samples are dealt to the ranks costliest first, so their vision work evens out; the draws themselves do not change. For a half-and-half 9-/3-tile mixture with 4 samples per GPU, the slowest rank of a step goes from 27.3 to 25.7 tiles on 2 GPUs, 30.0 to 26.3 on 4 and 32.1 to 26.5 on 8 (mean 24).
+On several GPUs a step waits for its slowest rank, and a source's images tile differently (NAVSIM's front view makes 9 InternVL tiles, WOD-E2E's 3). When the sources' tile counts differ, each step's samples are dealt to the ranks costliest first, so their vision work evens out; the draws themselves do not change. For a half-and-half 9-/3-tile mixture with 4 samples per GPU, the slowest rank of a step goes from 27.3 to 25.7 tiles on 2 GPUs, 30.0 to 26.3 on 4 and 32.1 to 26.5 on 8 (mean 24); a nuScenes + WOD-E2E mixture on 4 RTX 3090s steps in 1.00 s instead of 1.02 s.
 
 Training-split augmentation is off by default: `augment.history_dropout` and `augment.ego_status_dropout` zero the ego history / velocity and acceleration with the given probability (before the prompt is built), and `augment.color_jitter.p` (with `brightness`, `contrast`, `saturation`, `hue`), `augment.grayscale_p` and `augment.blur_p` are photometric image augmentations; geometric ones would move the scene against the labels.
 
