@@ -29,6 +29,7 @@ except ImportError:
 from .utils.conversation import get_conv_template
 
 LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # Qwen2 / Qwen3 LLMs
+FLEX_OWN_COMPILE = "flex_attention_own_compile"
 
 IMG_CONTEXT_TOKEN = '<IMG_CONTEXT>'
 IMG_START_TOKEN = '<img>'
@@ -127,7 +128,7 @@ class RecogDriveBackbone(nn.Module):
                 use_flash_attn=False,
                 device_map=self.device
             ).eval()
-            self.enable_sdpa()
+            self.set_attention()
             self.tokenizer = AutoTokenizer.from_pretrained(
                 checkpoint_path,
                 trust_remote_code=True,
@@ -156,14 +157,34 @@ class RecogDriveBackbone(nn.Module):
 
         print(f"Backbone '{self.model_type}' loaded successfully on device '{self.device}'.")
 
-    def enable_sdpa(self):
-        # official InternVL flash-attn path: 1487ms vs SDPA 715ms on 3090, same tokens
+    def set_attention(self):
+        # Vision: SDPA (the official InternVL flash-attn path: 1487ms vs SDPA 715ms on 3090, same tokens).
+        # Language: flex attention. The left-padded prompts need a causal + padding mask, which puts SDPA on a kernel
+        # whose backward costs 8x its forward on a 3090; flex skips the masked blocks, with the same outputs up to
+        # bf16 rounding (padding rows identical). It runs outside the compiled decoder blocks, compiled by
+        # transformers itself: inside a block graph torch 2.6 finds no flex backward kernel that fits a 3090.
         if torch.cuda.is_available():
             torch.backends.cuda.enable_flash_sdp(True)
             torch.backends.cuda.enable_mem_efficient_sdp(True)
+        language_attention = None
         language_model = getattr(self.model, "language_model", None)
         if language_model is not None and hasattr(language_model, "set_attn_implementation"):
-            language_model.set_attn_implementation("sdpa")
+            try:
+                from transformers import AttentionInterface, AttentionMaskInterface
+                from transformers.integrations.flex_attention import flex_attention_forward
+                from transformers.masking_utils import flex_attention_mask
+
+                AttentionInterface.register(FLEX_OWN_COMPILE, torch.compiler.disable(flex_attention_forward))
+                AttentionMaskInterface.register(FLEX_OWN_COMPILE, flex_attention_mask)
+                candidates = (FLEX_OWN_COMPILE, "sdpa")
+            except ImportError:
+                candidates = ("sdpa",)
+            for language_attention in candidates:
+                try:
+                    language_model.set_attn_implementation(language_attention)
+                    break
+                except (ImportError, ValueError):
+                    continue
 
         def sdpa_attn(module, x):
             bsz, seqlen, width = x.shape
@@ -181,7 +202,7 @@ class RecogDriveBackbone(nn.Module):
         for module in self.model.modules():
             if module.__class__.__name__ == "InternAttention":
                 module._naive_attn = types.MethodType(sdpa_attn, module)
-        print("Backbone attention: sdpa")
+        print(f"Backbone attention: vision sdpa, language {language_attention}")
 
     def add_lora(self, rank: int, alpha: float, dropout: float, targets: Optional[List[str]] = None) -> None:
         """LoRA adapters (peft) on the VLM's linear layers named in `targets`, by default the language model's
