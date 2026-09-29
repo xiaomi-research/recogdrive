@@ -157,14 +157,27 @@ def collate(batch):
     return features, collate_dicts(targets_list), list(tokens)
 
 
+def deal(indices, costs, world: int, per_rank: int):
+    """Splits one global batch among the ranks, per_rank samples each: costliest first, each to the least loaded
+    rank with room (ties keep the draw order)."""
+    loads, bins = [0.0] * world, [[] for _ in range(world)]
+    for index in sorted(indices, key=lambda i: -float(costs[i])):
+        rank = min((r for r in range(world) if len(bins[r]) < per_rank), key=lambda r: loads[r])
+        bins[rank].append(index)
+        loads[rank] += float(costs[index])
+    return bins
+
+
 class WeightedDistributedSampler(Sampler):
     """Draws len(weights) indices with replacement, proportional to the weights, identically on every rank from
-    (seed, epoch), and yields this rank's share."""
+    (seed, epoch), and yields this rank's share. Given per-sample costs, each global batch (batch_size per rank) is
+    dealt so the ranks of a step carry about the same load; a step waits for its slowest rank."""
 
-    def __init__(self, weights, rank: int, world: int, seed: int = 0):
+    def __init__(self, weights, rank: int, world: int, seed: int = 0, costs=None, batch_size: int = 1):
         self.weights = torch.as_tensor(weights, dtype=torch.double)
         self.rank, self.world, self.seed = rank, world, seed
         self.per_rank = len(self.weights) // world
+        self.costs, self.batch_size = costs, batch_size
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -173,10 +186,37 @@ class WeightedDistributedSampler(Sampler):
     def __iter__(self):
         generator = torch.Generator().manual_seed(self.seed + self.epoch)
         drawn = torch.multinomial(self.weights, self.per_rank * self.world, replacement=True, generator=generator)
-        return iter(drawn[self.rank::self.world].tolist())
+        drawn = drawn.tolist()
+        if self.costs is None or self.world == 1:
+            return iter(drawn[self.rank::self.world])
+        step = self.batch_size * self.world
+        whole = len(drawn) // step * step
+        mine = [index for start in range(0, whole, step)
+                for index in deal(drawn[start:start + step], self.costs, self.world, self.batch_size)[self.rank]]
+        return iter(mine + drawn[whole + self.rank::self.world])
 
     def __len__(self) -> int:
         return self.per_rank
+
+
+def tile_costs(dataset):
+    """Per-sample cost of a mixture for balancing ranks: the image tiles the model's worker transform makes of each
+    source's first sample (the vision encoder is what varies between samples; a source's images share a size).
+    None for one source, samples without tiles, or sources with the same tile count."""
+    sizes = [len(d) for d in getattr(dataset_of(dataset), "datasets", [])]
+    if len(sizes) < 2:
+        return None
+    tiles, start = [], 0
+    for size in sizes:
+        pixels = dataset[start][0].get("pixel_values")
+        if pixels is None:
+            return None
+        tiles.append(pixels.shape[0])
+        start += size
+    if len(set(tiles)) == 1:
+        return None
+    logger.info("mixture: dealing each step's samples to balance the ranks' image tiles (per source: %s)", tiles)
+    return torch.repeat_interleave(torch.tensor(tiles, dtype=torch.double), torch.tensor(sizes)).tolist()
 
 
 def dataloader_kwargs(params) -> dict:
@@ -196,7 +236,9 @@ def make_loader(dataset, params, train: bool, rank: int, world: int) -> DataLoad
     drop_last = bool(kwargs.pop("drop_last", train))
     weights = getattr(dataset, "sample_weights", None)
     if train and weights is not None:
-        kwargs["sampler"] = WeightedDistributedSampler(weights, rank, world)
+        costs = tile_costs(dataset) if world > 1 else None
+        kwargs["sampler"] = WeightedDistributedSampler(weights, rank, world, costs=costs,
+                                                       batch_size=int(kwargs.get("batch_size") or 1))
     elif world > 1:
         kwargs["sampler"] = DistributedSampler(dataset, num_replicas=world, rank=rank, shuffle=train, drop_last=drop_last)
     else:
