@@ -299,6 +299,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             self.register_buffer(name, torch.flip(tensor, [0]))
 
         flip_buffer('ddim_t', self.ddim_t_schedule)
+        self.ddim_timesteps = torch.flip(ddim_t, [0]).tolist()  # host ints: the sampling loop never reads the GPU
         flip_buffer('ddim_alphas', ddim_alphas)
         flip_buffer('ddim_alphas_sqrt', torch.sqrt(ddim_alphas))
         flip_buffer('ddim_alphas_prev', ddim_alphas_prev)
@@ -740,7 +741,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             eval_min_sampling_denoising_std = getattr(self, 'eval_min_sampling_denoising_std', 0.0001)
             eval_randn_clip_value = getattr(self, 'eval_randn_clip_value', 1.0)
             for i in range(self.ddim_steps):
-                t_batch = self.make_timesteps(B, self.ddim_t[i], device)
+                t_batch = self.make_timesteps(B, self.ddim_timesteps[i], device)
                 index_batch = self.make_timesteps(B, i, device)
 
                 mean, logvar, _ = self.p_mean_variance(
@@ -846,7 +847,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             if self.config.sampling_method == 'ddpm':
                 timesteps = self.ddpm_inference_timesteps()
             else:
-                timesteps = self.ddim_t
+                timesteps = self.ddim_timesteps
             
             for i, t_int in enumerate(timesteps):
                 t_batch = self.make_timesteps(B, t_int, device)
@@ -982,7 +983,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         )
 
         std = torch.exp(0.5 * logvar).clamp(min=self.min_logprob_denoising_std)
-        dist = Normal(mean, std)
+        dist = Normal(mean, std, validate_args=False)  # validation reads the GPU (a host sync per call)
         log_prob = dist.log_prob(x_t_minus_1)
         
         return log_prob
@@ -1196,7 +1197,7 @@ class EtaFixed(nn.Module):
         eta_normalized = torch.tanh(self.eta_logit)
 
         eta = 0.5 * (eta_normalized + 1) * (self.max - self.min) + self.min
-        return torch.full((B, 1), eta.item()).to(device)
+        return eta.float().expand(B, 1)  # stays on the device: no host sync (CUDA graphs capture this)
 
 
 def make_recogdrive_config(
