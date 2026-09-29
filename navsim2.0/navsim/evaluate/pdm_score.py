@@ -229,11 +229,37 @@ def pdm_pred_scores(
     scorer,
     traffic_agents_policy=None,
 ):
-    """Same call shape as NAVSIM 1.1. Official EPDMS inside."""
+    """Each pred's official EPDMS `pdm_score` (same call shape as NAVSIM 1.1). Log-replay traffic does not react to
+    the ego, so its detections are the same for every pred: the PDM ref and all preds are then simulated and scored
+    in one pass (every metric but progress is per trajectory; progress is normalized inside each (ref, pred) pair).
+    Reactive traffic policies score pred by pred."""
     from navsim.traffic_agents_policies.log_replay_traffic_agents import LogReplayTrafficAgents
 
     if traffic_agents_policy is None:
         traffic_agents_policy = LogReplayTrafficAgents(future_sampling)
+    if not model_trajectories:
+        return []
+    if type(traffic_agents_policy) is LogReplayTrafficAgents:
+        initial_ego_state = metric_cache.ego_state
+        states = [get_trajectory_as_array(metric_cache.trajectory, future_sampling, initial_ego_state.time_point)]
+        states += [
+            get_trajectory_as_array(
+                transform_trajectory(trajectory, initial_ego_state), future_sampling, initial_ego_state.time_point
+            )
+            for trajectory in model_trajectories
+        ]
+        simulated_states = simulator.simulate_proposals(np.stack(states, axis=0), initial_ego_state)
+        scorer.score_proposals(
+            simulated_states,
+            metric_cache.observation,
+            metric_cache.centerline,
+            metric_cache.route_lane_ids,
+            metric_cache.drivable_area_map,
+            metric_cache.map_parameters,
+            traffic_agents_policy.simulate_environment(simulated_states[1], metric_cache),
+            metric_cache.past_human_trajectory,
+        )
+        return [float(score) for score in scorer.pair_scores()]
     scores = []
     for trajectory in model_trajectories:
         frame = pdm_score(
