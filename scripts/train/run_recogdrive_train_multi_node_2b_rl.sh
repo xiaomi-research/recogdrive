@@ -54,4 +54,5 @@ torchrun \
     train_test_split=$TRAIN_TEST_SPLIT \
     cache_path="/path/to/recogdrive_agent_cache_dir_train_2b_no_hidden_state" \
     use_cache_without_dataset=True \
+    train.strategy=ddp train.precision=fp32 \
     force_cache_computation=False > train_recogdrive_exp_2b_rl.txt 2>&1

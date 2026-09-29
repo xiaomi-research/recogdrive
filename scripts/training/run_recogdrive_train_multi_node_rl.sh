@@ -49,5 +49,6 @@ torchrun \
     train_test_split=$TRAIN_TEST_SPLIT \
     cache_path="/path/to/recogdrive_agent_cache_dir_train" \
     use_cache_without_dataset=True \
+    train.strategy=ddp train.precision=fp32 \
     force_cache_computation=False > train_recogdrive_rl.txt 2>&1
   # 2>&1 | tee -a "training_log.txt" &

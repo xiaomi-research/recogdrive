@@ -73,10 +73,14 @@ case "${TRAIN_STAGE}" in
     GRPO_NUM_ITERATIONS="${GRPO_NUM_ITERATIONS:-4}"
     CHECKPOINT="${CHECKPOINT:-/path/to/${MODEL_FAMILY}_${TRAINING_TARGET}_il.ckpt}"
     METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-/path/to/metric_cache_train}"
+    # DDP: FSDP2's per-block hooks cost the small planner's RL passes more than sharding saves (2.19 s vs 2.69 s
+    # a batch on a 3090); fp32 keeps AdamW (bf16 DDP weights need Muon's fp32 masters)
     CHECKPOINT_ARGS=(
       "agent.checkpoint_path=${CHECKPOINT}"
       "agent.metric_cache_path=${METRIC_CACHE_PATH}"
       "agent.reference_policy_checkpoint=${CHECKPOINT}"
+      train.strategy=ddp
+      train.precision=fp32
     )
     ;;
   *)
