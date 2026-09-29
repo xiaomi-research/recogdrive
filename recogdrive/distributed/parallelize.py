@@ -222,11 +222,14 @@ def parallelize(model: nn.Module, args, ctx) -> nn.Module:
     model.register_forward_hook(expose_output)  # before FSDP2 / DDP register theirs, so it runs first
     replicated = replicated_params(model, args.replicate_frozen)
     # FSDP2 keeps fp32 master shards and computes in args.precision; under DDP the parameters are the compute
-    # dtype, and an optimizer with fp32 master copies (Muon) keeps bf16 training exact
+    # dtype, and an optimizer with fp32 master copies (Muon) keeps bf16 training exact. Frozen parameters outside
+    # replicate_frozen compute in args.precision either way (FSDP2 casts them), so modules mixing trainable and
+    # frozen ones (a frozen reference policy fed the policy's features) see one dtype.
     master = torch.float32 if args.strategy == "fsdp" else DTYPES[args.precision]
     with torch.no_grad():
         for param in model.parameters():
-            if param.requires_grad and param.is_floating_point() and param.dtype != master:
+            cast = param.requires_grad if args.strategy == "fsdp" else param not in replicated
+            if cast and param.is_floating_point() and param.dtype != master:
                 param.data = param.data.to(master)
     managed = [p for p in model.parameters() if p not in replicated]
     if not any(p.requires_grad for p in managed):
