@@ -7,7 +7,8 @@ config) with
     data_loader=nuscenes ...                   the data source, configured as for training (or infer.data_loader)
 
 It writes <output_dir>/predictions.json, {token: [[x, y, heading], ...]} in the ego frame at 0.5 s spacing. Launched
-with torchrun, the samples are sharded over the GPUs.
+with torchrun, the samples are sharded over the GPUs. `infer.serve=<protocol>` serves the checkpoint to a closed-loop
+simulator instead (recogdrive.closedloop).
 """
 
 import itertools
@@ -36,15 +37,10 @@ def load_weights(agent, ckpt: Path) -> None:
         raise ValueError(f"{ckpt} does not match the model: missing {missing[:5]}, unexpected {unexpected[:5]}")
 
 
-def run(cfg) -> None:
-    from recogdrive.adapters import check_policy, predict
-    from recogdrive.data import LOADERS, dataset_of, import_plugins, loader_name, make_loader
-    from recogdrive.data.registry import with_worker_transform
-    from recogdrive.distributed import DistributedContext
+def load_agent(cfg, device):
+    """The policy of `cfg.agent` with the weights of infer.checkpoint (and its `_vlm` export), in eval mode."""
+    from recogdrive.adapters import check_policy
 
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", level=logging.INFO)
-    ctx = DistributedContext()
-    import_plugins(cfg)
     ckpt = Path(str(OmegaConf.select(cfg, "infer.checkpoint") or ""))
     if not ckpt.is_file():
         raise FileNotFoundError(f"infer.checkpoint={ckpt} is not a file")
@@ -56,7 +52,25 @@ def run(cfg) -> None:
     agent = instantiate(agent_cfg)
     check_policy(agent)
     load_weights(agent, ckpt)
-    agent.to(ctx.device).eval()
+    return agent.to(device).eval()
+
+
+def run(cfg) -> None:
+    from recogdrive.adapters import predict
+    from recogdrive.data import LOADERS, dataset_of, import_plugins, loader_name, make_loader
+    from recogdrive.data.registry import with_worker_transform
+    from recogdrive.distributed import DistributedContext
+
+    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", level=logging.INFO)
+    import_plugins(cfg)
+    protocol = OmegaConf.select(cfg, "infer.serve")
+    if protocol:
+        from recogdrive.closedloop import serve
+
+        return serve(cfg, str(protocol))
+    ctx = DistributedContext()
+    ckpt = Path(str(OmegaConf.select(cfg, "infer.checkpoint")))
+    agent = load_agent(cfg, ctx.device)
 
     name = str(OmegaConf.select(cfg, "infer.data_loader") or loader_name(cfg))
     split = str(OmegaConf.select(cfg, "infer.split") or "val")

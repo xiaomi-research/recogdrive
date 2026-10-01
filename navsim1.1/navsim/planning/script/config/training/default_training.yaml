@@ -22,10 +22,12 @@ waymoe2e: false
 waymoe2e_train_split: training
 waymoe2e_val_split: val
 seed: 0
-data_loader: null  # registered loader: navsim | waymoe2e | nuscenes | mixture; null: navsim, or waymoe2e when waymoe2e=true
+data_loader: null  # registered loader: navsim | waymoe2e | nuscenes | physicalai | mixture; null: navsim, or waymoe2e when waymoe2e=true
 nuscenes:
   root: null  # directory holding samples/ and v1.0-*/
   version: v1.0-mini
+physicalai:
+  root: null  # cache built by python -m recogdrive.data.physicalai
 mixture: []  # data_loader=mixture: [{loader: navsim, weight: 1.0}, {loader: waymoe2e, weight: 0.5, overrides: {cache_path: ...}}]
 plugins: []  # modules imported at startup that register more loaders / evaluators
 augment:  # training split only; everything off by default
@@ -42,6 +44,9 @@ infer:  # run_recogdrive_infer.py
   data_loader: null  # null: data_loader
   split: val  # train | val | test (NAVSIM: every scene of train_test_split)
   visualize: 0  # draw the first N samples to <output_dir>/vis
+  serve: null  # closed-loop server instead of predictions: alpasim | neuroncap (recogdrive.closedloop)
+  port: null  # its port (null: the protocol's default)
+  host: 127.0.0.1  # its address; 0.0.0.0 accepts other machines
 max_steps: 0
 skip_validation: false
 
@@ -65,7 +70,7 @@ train:
   ema_reference_batch: 128  # global batch ema_decay is tuned for; other batch sizes use decay ** (batch / 128)
 
 evaluator:
-  name: null  # navsim | nuscenes | waymoe2e | drivelm | lingoqa | drivebench, or a list; evaluator.<name> overrides the shared keys
+  name: null  # navsim | nuscenes | waymoe2e | physicalai | drivelm | lingoqa | drivebench, or a list; evaluator.<name> overrides the shared keys
   every_n_epochs: 0  # 0: only the final checkpoint
   on_end: true
   split: navtest  # navsim: navtest, or on NAVSIM 2.0 navhard_two_stage / navsafe_two_stage (two-stage EPDMS)
@@ -85,6 +90,8 @@ evaluator:
   nuscenes:  # open-loop L2 / collision (ST-P3 and UniAD), in-process on the nuscenes val split
     data_overrides: {}  # config overrides for the data source, e.g. {nuscenes: {version: v1.0-trainval}}
   waymoe2e:  # WOD-E2E RFS / ADE, in-process on the waymoe2e val split (RFS needs a 5 s trajectory_sampling)
+    data_overrides: {}
+  physicalai:  # PhysicalAI-AV L2 at 1 / 2 / 3 s, ADE / FDE, in-process on the physicalai val split
     data_overrides: {}
 
 dataloader:

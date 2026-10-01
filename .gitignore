@@ -7,3 +7,7 @@ scripts/benchmark/
 **/tests/
 test_*.py
 check_*.py
+
+# docker/alpasim build context: AlpaSim checkout and weights
+docker/alpasim/alpasim/
+docker/alpasim/weights/

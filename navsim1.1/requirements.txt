@@ -43,8 +43,8 @@ accelerate  # transformers needs it for device_map / low_cpu_mem_usage loading
 decord
 qwen-vl-utils
 
-torch==2.9.1
-torchvision==0.24.1
+torch==2.6.0  # the last release for python 3.9 (environment.yml)
+torchvision==0.21.0
 pytorch-lightning
 tensorboard==2.16.2
 protobuf==4.25.3

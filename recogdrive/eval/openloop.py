@@ -11,6 +11,8 @@ nuscenes  L2 and collision rate at 1 / 2 / 3 s under both conventions of the pla
 waymoe2e  WOD-E2E Rater Feedback Score (a port of waymo_open_dataset/metrics/python/rater_feedback_utils.py, Apache
           2.0, averaged over frames rather than scenario clusters) and ADE at 3 / 5 s against the best-rated rater
           trajectory. The model's 0.5 s poses are interpolated to the 4 Hz grid; RFS and ADE@5s need a 5 s horizon.
+physicalai PhysicalAI-AV: L2 at 1 / 2 / 3 s (the step at t), ADE and FDE over the predicted horizon against the
+          recorded path, on every converted val keyframe.
 """
 
 import json
@@ -161,6 +163,15 @@ def waymo_metrics(samples: List[tuple], horizon_s: float) -> Dict[str, float]:
     return out
 
 
+def displacement_metrics(samples: List[tuple]) -> Dict[str, float]:
+    """samples: (pred, gt) 0.5 s poses. L2 at 1 / 2 / 3 s, ADE / FDE over the shorter of the two, in m."""
+    steps = min(min(len(pred), len(gt)) for pred, gt in samples)
+    errors = np.stack([np.linalg.norm(pred[:steps, :2] - gt[:steps, :2], axis=1) for pred, gt in samples])
+    out = {f"L2_{second}s": float(errors[:, 2 * second - 1].mean()) for second in NUSC_SECONDS if 2 * second <= steps}
+    out.update(ade=float(errors.mean()), fde=float(errors[:, -1].mean()), samples=len(samples))
+    return out
+
+
 # ----------------------------------------------------------------------------- evaluators
 
 class OpenLoopEvaluator:
@@ -247,3 +258,12 @@ class WaymoE2EEvaluator(OpenLoopEvaluator):
         if not samples:
             raise ValueError("no rater-labelled frames in the WOD-E2E split; convert the val TFRecords with this version")
         return waymo_metrics(samples, horizon_s)
+
+
+@register("physicalai")
+class PhysicalAIEvaluator(OpenLoopEvaluator):
+    source = "physicalai"
+
+    def score(self, dataset, predictions, horizon_s):
+        return displacement_metrics([(poses, dataset.eval_info(token)["trajectory"].numpy())
+                                     for token, poses in predictions.items()])
