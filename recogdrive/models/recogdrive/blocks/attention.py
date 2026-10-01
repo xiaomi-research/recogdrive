@@ -1,10 +1,10 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Optional
 
 from .rmsnorm import RMSNorm
-from .rope import RotaryEmbedding, rotate_half
+from .rope import rotate_half
 
 class Attention(nn.Module):
     """

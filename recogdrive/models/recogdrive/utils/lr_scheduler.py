@@ -1,5 +1,5 @@
 
-from torch.optim.lr_scheduler import LRScheduler, _LRScheduler
+from torch.optim.lr_scheduler import _LRScheduler
 import math
 
 PROGRESS = ("last_epoch", "_step_count", "_last_lr")

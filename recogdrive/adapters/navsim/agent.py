@@ -11,12 +11,9 @@ import itertools
 import os
 import torch
 from torch.optim import Optimizer
-import torch.optim as optim
 from torch.optim.lr_scheduler import LRScheduler
-from omegaconf import DictConfig, OmegaConf
 from transformers.feature_extraction_utils import BatchFeature
 from transformers import AutoConfig
-import math
 
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import AgentInput, SensorConfig, Trajectory
@@ -30,7 +27,7 @@ from recogdrive.models.recogdrive.muon import Muon
 from recogdrive.models.recogdrive.trajectory_utils import delta_to_waypoint, validate_training_target
 from recogdrive.models.recogdrive.utils.internvl_preprocess import load_image
 from recogdrive.models.recogdrive.utils.lr_scheduler import WarmupCosLR
-from recogdrive.models.recogdrive.utils.utils import format_number, build_from_configs
+from recogdrive.models.recogdrive.utils.utils import format_number
 
 # NAVSIM 2.0's AbstractAgent takes the trajectory sampling, 1.1's takes nothing.
 AGENT_TAKES_SAMPLING = "trajectory_sampling" in inspect.signature(AbstractAgent.__init__).parameters
@@ -233,8 +230,6 @@ class ReCogDriveAgent(AbstractAgent):
                 ranks = int(os.getenv("LOCAL_WORLD_SIZE", "1"))
                 grpo_reward_workers = min(16, max(1, (os.cpu_count() or 2) // (2 * ranks)))
             self.action_head.reward_fn = PDMReward(self.metric_cache_path, grpo_reward_workers)
-        self.num_inference_samples = 1
-        self.inference_selection_mode = "median"
 
     def name(self) -> str:
         return self.__class__.__name__
@@ -486,8 +481,8 @@ class ReCogDriveAgent(AbstractAgent):
         if self.optimizer_type == "muon":
             optimizer = Muon(params, lr=self._lr, weight_decay=1e-4, adamw_betas=(0.9, 0.95))
         else:
-            optimizer_cfg = DictConfig(dict(type="AdamW", lr=self._lr, weight_decay=1e-4, betas=(0.9, 0.95), fused=torch.cuda.is_available()))
-            optimizer = build_from_configs(optim, optimizer_cfg, params=params)
+            optimizer = torch.optim.AdamW(params, lr=self._lr, weight_decay=1e-4, betas=(0.9, 0.95),
+                                          fused=torch.cuda.is_available())
         
         warmup_epochs, min_lr, recipe_epochs = (0, 0.0, 10) if self.grpo else (3, 1e-6, 200)
         if total_steps:

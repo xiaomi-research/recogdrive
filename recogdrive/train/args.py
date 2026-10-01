@@ -16,9 +16,6 @@ class TrainArgs:
     compile: bool = True
     activation_checkpointing: List[str] = field(default_factory=list)
     activation_checkpointing_layers: Optional[int] = None  # recompute only the first N matches (None: all)
-    ddp_bucket_cap_mb: int = 25
-    ddp_find_unused_parameters: bool = False
-    ddp_static_graph: bool = False
     log_every: int = 10
     save_every_n_steps: int = 0
     resume: bool = False

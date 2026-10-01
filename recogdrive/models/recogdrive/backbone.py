@@ -1,10 +1,9 @@
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Union
 import types
 import torch
 from torch import nn
 import torch.nn.functional as F
 from transformers import AutoConfig, AutoModel, AutoProcessor, AutoTokenizer
-from PIL import Image
 
 try:
     from transformers import Qwen3VLForConditionalGeneration
@@ -25,8 +24,6 @@ try:
     from qwen_vl_utils import process_vision_info
 except ImportError:
     process_vision_info = None
-
-from .utils.conversation import get_conv_template
 
 LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # Qwen2 / Qwen3 LLMs
 FLEX_OWN_COMPILE = "flex_attention_own_compile"
@@ -238,11 +235,9 @@ class RecogDriveBackbone(nn.Module):
             if pixel_values is not None and '<image>' not in question:
                 question = '<image>\n' + question
             
-            template = get_conv_template("internvl2_5")
-            template.system_message = system_message
-            template.append_message(template.roles[0], question)
-            template.append_message(template.roles[1], None)
-            query = template.get_prompt()
+            # InternVL2.5's chat template (FastChat-style conversation "internvl2_5")
+            query = (f"<|im_start|>system\n{system_message}<|im_end|>\n<|im_start|>user\n{question}<|im_end|>\n"
+                     "<|im_start|>assistant\n")
 
             for _ in range(query.count('<image>')):
                 image_tokens = IMG_START_TOKEN + IMG_CONTEXT_TOKEN * self.num_image_token * next(counts) + IMG_END_TOKEN

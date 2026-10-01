@@ -1,8 +1,5 @@
-import math
-import numpy as np
 import torch
 import torchvision.transforms as T
-from decord import VideoReader, cpu
 from PIL import Image
 from torchvision.transforms.functional import InterpolationMode
 

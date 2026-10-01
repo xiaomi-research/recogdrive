@@ -6,9 +6,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-import torch.nn.functional as F
 from typing import Optional, List
-import numpy as np
 
 from diffusers.models.embeddings import (
     TimestepEmbedding,
@@ -232,9 +230,6 @@ class LightningDiT(nn.Module):
         Returns:
             The final output tensor, or a tuple of the output and all hidden states.
         """
-        seq_len = hidden_states.shape[1]
-        #hidden_states = hidden_states + self.pos_embed[:, :seq_len, :]
-
         hidden_states = hidden_states.contiguous()
         encoder_hidden_states = encoder_hidden_states.contiguous()
         conditioning_features = conditioning_features.contiguous()

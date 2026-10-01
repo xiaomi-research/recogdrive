@@ -23,17 +23,12 @@ import numpy as np
 import torch
 from timm.models.layers import Mlp
 from torch import nn
-from torch.distributions import Beta, Normal, kl_divergence
+from torch.distributions import Beta, Normal
 import torch.nn.functional as F
 from transformers import PretrainedConfig
 from transformers.feature_extraction_utils import BatchFeature
 
-from .blocks.encoder import (
-    ActionEncoder,
-    SinusoidalPositionalEncoding,
-    StateAttentionEncoder,
-    SwiGLUFFN,
-)
+from .blocks.encoder import ActionEncoder
 from .dit import LightningDiT
 from .trajectory_utils import delta_to_waypoint, validate_training_target
 
@@ -58,7 +53,6 @@ class FlowConfig:
     noise_beta_beta: float = 1.0
     noise_s: float = 0.999
     num_timestep_buckets: int = 1000
-    mean_variance_net: bool = False
 
 @dataclass
 class DDPMConfig:
@@ -137,11 +131,9 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     action_horizon: int = 8
     add_pos_embed: bool = True
     max_seq_len: int = 8
-    ego_status_encoder_type: Literal['mlp', 'attention'] = 'mlp'
 
     sampling_method: Literal['flow', 'ddpm', 'ddim'] = 'ddim'
     num_inference_steps: int = 5
-    model_dtype: str = "float16"
     grpo: bool = False
     vlm_size: str = 'large'
     vlm_hidden_size: Optional[int] = None
@@ -150,9 +142,6 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     # (x, y, heading) range mapped to [-1, 1]; sampled actions are clipped to it. None = NAVSIM 4 s statistics.
     action_norm_min: Optional[List[float]] = None
     action_norm_max: Optional[List[float]] = None
-    
-    tune_projector: bool = True
-    tune_diffusion_model: bool = True
     
     flow_cfg: FlowConfig = field(default_factory=FlowConfig)
     ddpm_cfg: DDPMConfig = field(default_factory=DDPMConfig)
@@ -177,19 +166,12 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             norm_layer=nn.LayerNorm
         )
 
-        if config.ego_status_encoder_type == 'attention':
-            self.ego_status_encoder = StateAttentionEncoder(
-                state_dim=8,
-                embed_dim=config.input_embedding_dim,
-                num_kinematic_states=4 
-            )
-        else: 
-            self.ego_status_encoder = Mlp(
-                in_features=8,
-                hidden_features=config.hidden_size,
-                out_features=config.input_embedding_dim,
-                norm_layer=nn.LayerNorm
-            )
+        self.ego_status_encoder = Mlp(
+            in_features=8,
+            hidden_features=config.hidden_size,
+            out_features=config.input_embedding_dim,
+            norm_layer=nn.LayerNorm
+        )
 
         self.action_encoder = ActionEncoder(
             action_dim=config.action_dim,
@@ -202,14 +184,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             
         self.fusion_projector = nn.Linear(config.input_embedding_dim * 3, config.input_embedding_dim)
 
-        output_dim = 2 * config.action_dim if (
-            config.sampling_method == 'flow' and config.flow_cfg.mean_variance_net
-        ) else config.action_dim
-        
         self.action_decoder = Mlp(
             in_features=self.model.output_dim,
             hidden_features=config.hidden_size,
-            out_features=output_dim,
+            out_features=config.action_dim,
             norm_layer=nn.LayerNorm
         )
         
@@ -398,26 +376,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         return t
 
 
-    def set_frozen_modules_to_eval_mode(self):
-        """
-        Sets frozen parts of the model to evaluation mode during training.
-        This is necessary to disable behaviors like dropout in the frozen layers.
-        """
-        if self.training:
-
-            if not self.config.tune_projector:
-                self.his_traj_encoder.eval()
-                self.ego_status_encoder.eval()
-                self.action_encoder.eval()
-                self.action_decoder.eval()
-                self.feature_encoder.eval()
-                self.fusion_projector.eval()
-                if self.config.add_pos_embed:
-                    self.position_embedding.eval()
-            
-            if not self.config.tune_diffusion_model:
-                self.model.eval()
-
     def sample_time(self, batch_size, device, dtype):
         """Samples time for training based on the sampling method."""
         if self.config.sampling_method == 'flow':
@@ -534,8 +492,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             conditioning_features=ego_status_features,
             timesteps=t_batch,
         )
-        pred = self.action_decoder(model_output)
-        return pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
+        return self.action_decoder(model_output)
 
     def flow_sde_step_with_logprob(
         self,
@@ -1007,7 +964,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         deterministic: bool = False,
     ) -> GRPORollout:
         """Sample once. Cache old_logprobs as π_old (TRL). Do not copy weights."""
-        self.set_frozen_modules_to_eval_mode()
         B = vl_features.shape[0]
         G = int(sample_time or self.sample_time)
         # the G trajectories of a sample follow each other and share its (unrepeated) VLM features
@@ -1074,7 +1030,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         deterministic: bool = False,
     ) -> BatchFeature:
         """One inner update on a cached rollout. Trainer may call this μ times."""
-        self.set_frozen_modules_to_eval_mode()
         log_probs = self.flat_step_logprob(
             self.get_logprobs(
                 rollout.vl, rollout.his_rep, rollout.status_rep, rollout.chains, deterministic=False
@@ -1197,7 +1152,6 @@ class EtaFixed(nn.Module):
     def __call__(self, x):
         """Match input batch size, but do not depend on input"""
         B = len(x)
-        device = x.device
         eta_normalized = torch.tanh(self.eta_logit)
 
         eta = 0.5 * (eta_normalized + 1) * (self.max - self.min) + self.min
@@ -1213,7 +1167,6 @@ def make_recogdrive_config(
     sampling_method: str = 'ddim',
     num_inference_steps: int = 5,
     grpo: bool = False,
-    model_dtype: str = "float16",
     training_target: str = "waypoint",
     delta_interval_length: float = 0.5,
     vlm_hidden_size: Optional[int] = None,
@@ -1224,7 +1177,7 @@ def make_recogdrive_config(
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
 
     This function simplifies configuration by using a size preset ("small",
-    "large", "large_new") to define the core DiT architecture, while allowing
+    "large") to define the core DiT architecture, while allowing
     other important planner settings to be specified.
 
     Args:
@@ -1235,7 +1188,6 @@ def make_recogdrive_config(
         sampling_method (str): The core training and sampling methodology.
         num_inference_steps (int): Number of steps for inference sampling.
         grpo (bool): If True, enables GRPO-specific logic.
-        model_dtype (str): The data type for model computations.
         training_target (str): Train the planner on 'waypoint' poses or 'delta' velocities.
 
     Returns:
@@ -1267,7 +1219,6 @@ def make_recogdrive_config(
         sampling_method=sampling_method,
         num_inference_steps=num_inference_steps,
         grpo=grpo,
-        model_dtype=model_dtype,
         training_target=validate_training_target(training_target),
         delta_interval_length=delta_interval_length,
         vlm_hidden_size=vlm_hidden_size,

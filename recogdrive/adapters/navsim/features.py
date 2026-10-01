@@ -1,21 +1,15 @@
 from typing import Dict, Optional
 from pathlib import Path
 import torch
-import numpy as np
-import gzip
-import pickle
-from PIL import Image
 
 from navsim.agents.abstract_agent import AgentInput
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
-from navsim.common.dataclasses import Scene, Trajectory
+from navsim.common.dataclasses import Scene
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from recogdrive.models.recogdrive.backbone import RecogDriveBackbone
 from recogdrive.models.recogdrive.trajectory_utils import validate_training_target, waypoint_to_delta
 from recogdrive.models.recogdrive.utils.internvl_preprocess import load_image
-
-def format_number(n, decimal_places=2):
-    return f"{n:+.{decimal_places}f}" if abs(round(n, decimal_places)) > 1e-2 else "0.0"
+from recogdrive.models.recogdrive.utils.utils import format_number
 
 
 NAVSIM_VIEWS = {"front": "cam_f0", "front_left": "cam_l0", "front_right": "cam_r0", "left": "cam_l1",

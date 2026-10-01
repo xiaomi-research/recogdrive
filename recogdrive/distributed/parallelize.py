@@ -253,10 +253,7 @@ def parallelize(model: nn.Module, args, ctx) -> nn.Module:
                 device_ids=[ctx.local_rank] if ctx.device.type == "cuda" else None,
                 output_device=ctx.local_rank if ctx.device.type == "cuda" else None,
                 broadcast_buffers=False,
-                find_unused_parameters=args.ddp_find_unused_parameters,
                 gradient_as_bucket_view=True,
-                static_graph=args.ddp_static_graph,
-                bucket_cap_mb=args.ddp_bucket_cap_mb,
             )
             if "init_sync" in inspect.signature(DDP.__init__).parameters:
                 kwargs["init_sync"] = False
