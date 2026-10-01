@@ -45,7 +45,7 @@ infer:  # run_recogdrive_infer.py
   data_loader: null  # null: data_loader
   split: val  # train | val | test (NAVSIM: every scene of train_test_split)
   visualize: 0  # draw the first N samples to <output_dir>/vis
-  serve: null  # closed-loop server instead of predictions: alpasim | neuroncap (recogdrive.closedloop)
+  serve: null  # closed-loop server instead of predictions: alpasim | hugsim | neuroncap (recogdrive.closedloop)
   port: null  # its port (null: the protocol's default)
   host: 127.0.0.1  # its address; 0.0.0.0 accepts other machines
 max_steps: 0

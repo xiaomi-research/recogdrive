@@ -24,13 +24,13 @@ import torch
 from omegaconf import OmegaConf
 from PIL import Image
 
+from recogdrive.closedloop import UNIAD_COMMANDS
 from recogdrive.data.nuscenes import CAMERAS
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 9000
 POINTS = 6
-COMMAND = {0: 2, 1: 0, 2: 1}  # NeuroNCAP right / left / straight -> recogdrive.closedloop.COMMANDS
 
 
 def decode_image(text: str) -> Image.Image:
@@ -43,7 +43,7 @@ def infer(driver, request: dict) -> dict:
     driver.observe(now, pose[0, 3], pose[1, 3], math.atan2(pose[1, 0], pose[0, 0]))
     canbus = request["canbus"]
     images = [(view, decode_image(request["images"][cam])) for cam, view in CAMERAS.items() if cam in request["images"]]
-    poses = driver.plan(now, images, COMMAND[int(request["command"])], canbus[13:15], canbus[7:9])
+    poses = driver.plan(now, images, UNIAD_COMMANDS[int(request["command"])], canbus[13:15], canbus[7:9])
     return {"trajectory": poses[:POINTS, :2].tolist(), "aux_outputs": {}}
 
 

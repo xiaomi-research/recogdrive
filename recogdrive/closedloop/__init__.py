@@ -6,6 +6,7 @@ navigation command, camera images held in memory) and returns the policy's `pred
 every simulator. Protocol modules translate the simulators' messages:
 
     alpasim    AlpaSim (NVIDIA) egodriver gRPC service
+    hugsim     HUGSIM agent process (pickles over FIFOs)
     neuroncap  NeuroNCAP HTTP inference server (/alive, /reset, /infer)
 
 `run_recogdrive_infer.py infer.serve=<protocol> infer.port=<port> infer.checkpoint=...` with the training config's
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 HISTORY = 3
 COMMANDS = ("left", "straight", "right", "unknown")  # high_command_one_hot order
+UNIAD_COMMANDS = {0: 2, 1: 0, 2: 1}  # UniAD's 0 right / 1 left / 2 straight (NeuroNCAP, HUGSIM) -> COMMANDS
 
 
 def to_world(poses: np.ndarray, origin: np.ndarray) -> np.ndarray:

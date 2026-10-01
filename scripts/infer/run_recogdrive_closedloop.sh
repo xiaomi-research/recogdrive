@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serves a trained checkpoint to a closed-loop simulator (recogdrive.closedloop): SERVE=alpasim | neuroncap.
+# Serves a trained checkpoint to a closed-loop simulator (recogdrive.closedloop): SERVE=alpasim | hugsim | neuroncap.
 # The agent config is the training one; overrides go after the script, e.g.
 #   CHECKPOINT=.../epoch_0010.ckpt SERVE=neuroncap PORT=9000 bash scripts/infer/run_recogdrive_closedloop.sh agent.cameras=null
 set -euo pipefail
@@ -15,10 +15,11 @@ export PYTHONPATH="${NAVSIM_DEVKIT_ROOT}:${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-/path/to/NAVSIM/dataset}"
 
 CHECKPOINT="${CHECKPOINT:?set CHECKPOINT to a trained .ckpt}"
-SERVE="${SERVE:?set SERVE to alpasim or neuroncap}"
+SERVE="${SERVE:?set SERVE to alpasim, hugsim or neuroncap}"
 VLM_PATH="${VLM_PATH:-/path/to/internvl3_pretrain_model}"
 PORT="${PORT:-null}"
 HOST="${HOST:-127.0.0.1}"
+OUTPUT_DIR="${OUTPUT_DIR:-${NAVSIM_EXP_ROOT}/closedloop/${SERVE}}"  # hugsim: the episode directory holding its pipes
 
 python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_recogdrive_infer.py" \
   agent=recogdrive_agent \
@@ -29,5 +30,5 @@ python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_recogdrive_infer.py" \
   infer.serve="${SERVE}" \
   infer.port="${PORT}" \
   infer.host="${HOST}" \
-  output_dir="${NAVSIM_EXP_ROOT}/closedloop/${SERVE}" \
+  output_dir="${OUTPUT_DIR}" \
   "$@"
