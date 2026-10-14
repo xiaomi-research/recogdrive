@@ -221,11 +221,15 @@ ReCogDrive is greatly inspired by the following outstanding contributions to the
 If you find ReCogDrive is useful in your research or applications, please consider giving us a star 🌟 and citing it by the following BibTeX entry.
 
 ```bibtex
-@article{li2025recogdrive,
-  title={ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving},
-  author={Li, Yongkang and Xiong, Kaixin and Guo, Xiangyu and Li, Fang and Yan, Sixu and Xu, Gangwei and Zhou, Lijun and Chen, Long and Sun, Haiyang and Wang, Bing and others},
-  journal={arXiv preprint arXiv:2506.08052},
-  year={2025}
+@inproceedings{li2026recogdrive,
+ author = {Li, Yongkang and Xiong, Kaixin and Guo, Xiangyu and Li, Fang and Yan, Sixu and Xu, Gangwei and Zhou, Lijun and Chen, Long and Sun, Haiyang and Wang, Bing and Ma, Kun and Chen, Guang and Ye, Hangjun and Liu, Wenyu and Wang, Xinggang},
+ booktitle = {International Conference on Learning Representations},
+ editor = {C. Vondrick and B. Hariharan and C. Raffel and L. Pinto and D. Yang and A. Faust},
+ pages = {157518--157556},
+ title = {ReCogDrive: A Reinforced Cognitive Framework for End-to-End Autonomous Driving},
+ url = {https://proceedings.iclr.cc/paper_files/paper/2026/file/ff7bf6014f7826da531aa50f4538ee19-Paper-Conference.pdf},
+ volume = {2026},
+ year = {2026}
 }
 ```
 
