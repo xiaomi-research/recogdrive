@@ -25,14 +25,27 @@ export PORT=${PORT}
 echo "GPUS: ${GPUS}"
 export CUDA_LAUNCH_BLOCKING=0
 
-
 CHECKPOINT="/path/to/recogdrive.ckpt"
+VLM_PATH="${VLM_PATH:-/path/to/ReCogDrive-VLM-2B}"
+CAM_TYPE="${CAM_TYPE:-single}"
+FRONT_SHORT_SIDE="${FRONT_SHORT_SIDE:-960}"
+SIDE_SHORT_SIDE="${SIDE_SHORT_SIDE:-480}"
+VLM_MAX_LENGTH="${VLM_MAX_LENGTH:-8704}"
 
+AGENT_OVERRIDES=(
+  agent.cam_type="${CAM_TYPE}"
+)
+if [[ "${CAM_TYPE}" == "multi" ]]; then
+  AGENT_OVERRIDES+=(
+    agent.front_short_side="${FRONT_SHORT_SIDE}"
+    agent.side_short_side="${SIDE_SHORT_SIDE}"
+    agent.vlm_max_length="${VLM_MAX_LENGTH}"
+  )
+fi
 
 # 1. Set NAVSIM dataset and related environment variables
 # 2. Configure torchrun (e.g., single machine: --nproc_per_node=8; adjust for multi-node)
 # 3. Set agent.vlm_path and agent.checkpoint_path CHECKPOINT
-
 
 
 torchrun \
@@ -41,13 +54,13 @@ torchrun \
     train_test_split=$TRAIN_TEST_SPLIT \
     agent=recogdrive_agent \
     agent.checkpoint_path="'$CHECKPOINT'" \
-    agent.vlm_path='/path/to/ReCogDrive-VLM-2B' \
-    agent.cam_type='single' \
+    agent.vlm_path="${VLM_PATH}" \
     agent.grpo=False \
     agent.cache_hidden_state=False \
     agent.vlm_type="internvl" \
     agent.dit_type="small" \
     agent.vlm_size="small" \
     agent.sampling_method="ddim" \
-    experiment_name=recogdrive_agent_eval
-
+    experiment_name=recogdrive_agent_eval \
+    "${AGENT_OVERRIDES[@]}" \
+    "$@"
