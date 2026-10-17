@@ -15,7 +15,6 @@ from typing import Dict, Iterable, List, Optional, Set
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-import torch.utils._pytree as pytree
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 logger = logging.getLogger(__name__)
@@ -31,20 +30,12 @@ def fp32_average_hook(process_group, bucket):
     return future.then(lambda done: buffer.copy_(done.value()[0]))
 
 
-def expose_output(module: nn.Module, args, output) -> None:
-    """Forward hook: FSDP2 (and DDP) hook the backward pass onto the tensors they find in the forward output through
-    torch pytree. A container pytree does not know (transformers' BatchFeature, SimpleNamespace) hides the loss, and
-    FSDP2 then leaves the parameters unsharded without ever reducing their gradients. Such a container type is
-    registered with pytree the first time a model returns it."""
-    kind = type(output)
-    if kind in pytree.SUPPORTED_NODES or torch.is_tensor(output) or output is None:
-        return
-    if isinstance(output, Mapping):
-        pytree.register_pytree_node(kind, lambda m: (list(m.values()), list(m.keys())),
-                                    lambda values, keys: kind(dict(zip(keys, values))))
-    elif hasattr(output, "__dict__"):
-        pytree.register_pytree_node(kind, lambda o: (list(vars(o).values()), list(vars(o))),
-                                    lambda values, keys: kind(**dict(zip(keys, values))))
+def expose_output(module: nn.Module, args, output):
+    """Expose output tensors using a native dict, understood by both FSDP2 and DDP's unused-parameter scan."""
+    if isinstance(output, Mapping) and type(output) is not dict:
+        return dict(output)
+    if hasattr(output, "__dict__") and "loss" in vars(output):
+        return vars(output)
 
 
 def base_module(module: nn.Module) -> nn.Module:
@@ -74,6 +65,14 @@ def replicated_params(model: nn.Module, replicate_frozen: Iterable[str]) -> Set[
             + ". Give them shape (1,)."
         )
     return out
+
+
+def cast_managed_parameters(model: nn.Module, dtype: torch.dtype, replicated: Set[nn.Parameter]) -> None:
+    """Cast every parameter FSDP will manage; it requires one original dtype per shard group."""
+    with torch.no_grad():
+        for param in model.parameters():
+            if param not in replicated and param.is_floating_point() and param.dtype != dtype:
+                param.data = param.data.to(dtype)
 
 
 def block_runs(model: nn.Module, wrap_classes: Iterable[str], skip: Set[nn.Parameter]) -> List[List[nn.Module]]:
@@ -226,11 +225,7 @@ def parallelize(model: nn.Module, args, ctx) -> nn.Module:
     # replicate_frozen compute in args.precision either way (FSDP2 casts them), so modules mixing trainable and
     # frozen ones (a frozen reference policy fed the policy's features) see one dtype.
     master = torch.float32 if args.strategy == "fsdp" else DTYPES[args.precision]
-    with torch.no_grad():
-        for param in model.parameters():
-            cast = param.requires_grad if args.strategy == "fsdp" else param not in replicated
-            if cast and param.is_floating_point() and param.dtype != master:
-                param.data = param.data.to(master)
+    cast_managed_parameters(model, master, replicated)
     managed = [p for p in model.parameters() if p not in replicated]
     if not any(p.requires_grad for p in managed):
         raise ValueError("no trainable parameters to optimize")
@@ -254,6 +249,7 @@ def parallelize(model: nn.Module, args, ctx) -> nn.Module:
                 output_device=ctx.local_rank if ctx.device.type == "cuda" else None,
                 broadcast_buffers=False,
                 gradient_as_bucket_view=True,
+                find_unused_parameters=args.find_unused_parameters,
             )
             if "init_sync" in inspect.signature(DDP.__init__).parameters:
                 kwargs["init_sync"] = False

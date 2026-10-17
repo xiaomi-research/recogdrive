@@ -83,6 +83,10 @@ class TransformedDataset(Dataset):
         self.transform = transform
 
     @property
+    def task(self):
+        return getattr(self.dataset, "task", "planning")
+
+    @property
     def sample_weights(self):
         return getattr(self.dataset, "sample_weights", None)
 
@@ -103,10 +107,16 @@ def build_split(cfg: Any, agent: Any, split: str):
             "Register a loader for a new dataset; the trainer does not change."
         )
     augment = OmegaConf.select(cfg, "augment") if split == "train" else None
-    return with_worker_transform(fn(cfg, agent, split), agent, augment)
+    dataset = fn(cfg, agent, split)
+    # Mixtures apply planner transforms per source so VQA preprocessing stays intact.
+    return dataset if name == "mixture" else with_worker_transform(dataset, agent, augment)
 
 
 def with_worker_transform(dataset, agent, augment=None):
+    if getattr(dataset, "worker_transform_applied", False):
+        return dataset
+    if getattr(dataset, "task", "planning") != "planning":
+        return dataset
     from torchvision.transforms import Compose
 
     from recogdrive.data.augment import ego_dropout, image_augment
@@ -133,8 +143,14 @@ def collate_field(key: str, values):
         return [int(n) for v in values for n in (v.reshape(-1).tolist() if torch.is_tensor(v) else [v])]
     if not torch.is_tensor(first):
         return list(values)
-    if key == "pixel_values":
+    if key in ("pixel_values", "image_grid_thw"):
         return torch.cat(values, dim=0)
+    if key in ("input_ids", "attention_mask", "labels"):
+        sequences = [v.squeeze(0) if v.ndim == 2 and v.shape[0] == 1 else v for v in values]
+        if all(v.ndim == 1 for v in sequences):
+            padding = -100 if key == "labels" else 0
+            return rnn_utils.pad_sequence([v.flip(0) for v in sequences], batch_first=True,
+                                          padding_value=padding).flip(1)
     if all(v.shape == first.shape for v in values):
         return torch.stack(values, dim=0)
     if first.dim() >= 1 and all(v.dim() == first.dim() and v.shape[1:] == first.shape[1:] for v in values):
@@ -148,6 +164,11 @@ def collate_dicts(dicts):
 
 
 def collate(batch):
+    if not batch:
+        raise ValueError("cannot collate an empty batch")
+    sizes = [len(sample) for sample in batch]
+    if len(set(sizes)) != 1 or sizes[0] not in (2, 3):
+        raise ValueError(f"samples must all contain (features, targets[, token]); got item counts {sizes}")
     columns = list(zip(*batch))
     features_list, targets_list = columns[0], columns[1]
     tokens = columns[2] if len(columns) > 2 else [None] * len(batch)
@@ -168,23 +189,97 @@ def deal(indices, costs, world: int, per_rank: int):
     return bins
 
 
-class WeightedDistributedSampler(Sampler):
-    """Draws len(weights) indices with replacement, proportional to the weights, identically on every rank from
-    (seed, epoch), and yields this rank's share. Given per-sample costs, each global batch (batch_size per rank) is
-    dealt so the ranks of a step carry about the same load; a step waits for its slowest rank."""
+class TaskBatchSampler(Sampler):
+    """Sequential task batches without counting distributed padding as validation data."""
 
-    def __init__(self, weights, rank: int, world: int, seed: int = 0, costs=None, batch_size: int = 1):
+    def __init__(self, task_ids, batch_size: int, rank: int, world: int, drop_last: bool = False):
+        self.batch_size, self.rank, self.world = batch_size, rank, world
+        self.groups = {}
+        for index, task in enumerate(task_ids):
+            if not isinstance(task, str):
+                raise TypeError(f"sample task must be a string, got {type(task).__name__}")
+            self.groups.setdefault(task, []).append(index)
+
+        self.batches = []
+        self.valid_batch_sizes = []
+        for indices in self.groups.values():
+            if not indices:
+                continue
+            rank_batches = []
+            for rank_index in range(world):
+                rank_indices = indices[rank_index::world]
+                if drop_last:
+                    batches = [rank_indices[start:start + batch_size]
+                               for start in range(0, len(rank_indices) - batch_size + 1, batch_size)]
+                else:
+                    batches = [rank_indices[start:start + batch_size]
+                               for start in range(0, len(rank_indices), batch_size)]
+                rank_batches.append(batches)
+            step_count = max(map(len, rank_batches), default=0)
+            for rank_index, batches in enumerate(rank_batches):
+                valid_sizes = [len(batch) for batch in batches]
+                # A rank with no real batch still forwards one duplicate sample so FSDP ranks stay in lockstep;
+                # valid_batch_sizes marks it as metric-only padding.
+                batches.extend([[indices[0]] for _ in range(step_count - len(batches))])
+                valid_sizes.extend([0] * (step_count - len(valid_sizes)))
+                if rank_index == rank:
+                    self.batches.extend(batches)
+                    self.valid_batch_sizes.extend(valid_sizes)
+
+    def __iter__(self):
+        return iter(self.batches)
+
+    def __len__(self):
+        return len(self.batches)
+
+
+class WeightedDistributedSampler(Sampler):
+    """Draws about len(weights) indices with replacement, rounded up to equal per-rank counts, proportional to the
+    weights and identically on every rank from (seed, epoch). Given per-sample costs, each global batch is dealt so
+    the ranks of a step carry about the same load."""
+
+    def __init__(self, weights, rank: int, world: int, seed: int = 0, costs=None, batch_size: int = 1,
+                 task_ids=None):
         self.weights = torch.as_tensor(weights, dtype=torch.double)
         self.rank, self.world, self.seed = rank, world, seed
-        self.per_rank = len(self.weights) // world
+        self.per_rank = (len(self.weights) + world - 1) // world
         self.costs, self.batch_size = costs, batch_size
         self.epoch = 0
+        self.task_groups = None
+        self.task_weights = None
+        if task_ids is not None:
+            if len(task_ids) != len(self.weights):
+                raise ValueError(f"task_ids has {len(task_ids)} entries for {len(self.weights)} samples")
+            groups = {}
+            for index, task in enumerate(task_ids):
+                if not isinstance(task, str):
+                    raise TypeError(f"sample task must be a string, got {type(task).__name__}")
+                groups.setdefault(task, []).append(index)
+            self.task_groups = {task: torch.tensor(indices, dtype=torch.long) for task, indices in groups.items()}
+            self.task_weights = torch.stack([self.weights[indices].sum() for indices in self.task_groups.values()])
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
     def __iter__(self):
         generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        if self.task_groups is not None:
+            mine = []
+            tasks = list(self.task_groups)
+            for start in range(0, self.per_rank, self.batch_size):
+                per_rank = min(self.batch_size, self.per_rank - start)
+                per_task_batch = per_rank * self.world
+                task_index = int(torch.multinomial(self.task_weights, 1, replacement=True, generator=generator))
+                members = self.task_groups[tasks[task_index]]
+                probabilities = self.weights[members]
+                selected = members[torch.multinomial(probabilities, per_task_batch, replacement=True,
+                                                      generator=generator)].tolist()
+                if self.costs is not None and self.world > 1:
+                    mine.extend(deal(selected, self.costs, self.world, per_rank)[self.rank])
+                else:
+                    rank_start = self.rank * per_rank
+                    mine.extend(selected[rank_start:rank_start + per_rank])
+            return iter(mine)
         drawn = torch.multinomial(self.weights, self.per_rank * self.world, replacement=True, generator=generator)
         drawn = drawn.tolist()
         if self.costs is None or self.world == 1:
@@ -230,17 +325,24 @@ def dataloader_kwargs(params) -> dict:
     return kwargs
 
 
-def make_loader(dataset, params, train: bool, rank: int, world: int) -> DataLoader:
+def make_loader(dataset, params, train: bool, rank: int, world: int, seed: int = 0) -> DataLoader:
     kwargs = dataloader_kwargs(params)
-    # Fixed batch shapes keep compiled graphs and cuDNN plans valid for the whole epoch.
-    drop_last = bool(kwargs.pop("drop_last", train))
+    drop_last = bool(kwargs.pop("drop_last", False))
     weights = getattr(dataset, "sample_weights", None)
     if train and weights is not None:
         costs = tile_costs(dataset) if world > 1 else None
-        kwargs["sampler"] = WeightedDistributedSampler(weights, rank, world, costs=costs,
-                                                       batch_size=int(kwargs.get("batch_size") or 1))
+        task_ids = getattr(dataset, "sample_tasks", None) if getattr(dataset, "batch_by_task", False) else None
+        kwargs["sampler"] = WeightedDistributedSampler(weights, rank, world, seed=seed, costs=costs,
+                                                       batch_size=int(kwargs.get("batch_size") or 1),
+                                                       task_ids=task_ids)
+    elif getattr(dataset, "batch_by_task", False):
+        batch_size = int(kwargs.pop("batch_size") or 1)
+        kwargs["batch_sampler"] = TaskBatchSampler(dataset.sample_tasks, batch_size, rank, world, drop_last)
+        # A custom batch sampler owns tail handling; DataLoader forbids drop_last alongside batch_sampler.
+        return DataLoader(dataset, collate_fn=collate, **kwargs)
     elif world > 1:
-        kwargs["sampler"] = DistributedSampler(dataset, num_replicas=world, rank=rank, shuffle=train, drop_last=drop_last)
+        kwargs["sampler"] = DistributedSampler(dataset, num_replicas=world, rank=rank, shuffle=train,
+                                                drop_last=drop_last, seed=seed)
     else:
         kwargs["shuffle"] = train
     return DataLoader(dataset, collate_fn=collate, drop_last=drop_last, **kwargs)

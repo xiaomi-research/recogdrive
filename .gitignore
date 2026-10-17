@@ -7,6 +7,15 @@ scripts/benchmark/
 **/tests/
 test_*.py
 check_*.py
+!scripts/verify/check_gpu_training.py
+!tests/
+!tests/test_*.py
+
+build/
+dist/
+*.egg-info/
+.codex-tasks/**/raw/*.tar.gz
+.codex-tasks/**/raw/main_reference/
 
 # docker/alpasim build context: AlpaSim checkout and weights
 docker/alpasim/alpasim/

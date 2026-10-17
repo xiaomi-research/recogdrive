@@ -161,6 +161,8 @@ class NuScenesDataset(Dataset):
 
 @register("nuscenes")
 def nuscenes_loader(cfg, agent, split: str):
+    if split not in ("train", "val"):
+        raise ValueError(f"nuScenes loader supports train/val splits, got {split!r}")
     if getattr(agent, "cache_hidden_state", False):
         raise ValueError("nuscenes loader feeds images; set agent.cache_hidden_state=False")
     root = OmegaConf.select(cfg, "nuscenes.root")

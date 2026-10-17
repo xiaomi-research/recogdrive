@@ -20,12 +20,28 @@ VLM_PATH="${VLM_PATH:-/path/to/internvl3_pretrain_model}"
 PORT="${PORT:-null}"
 HOST="${HOST:-127.0.0.1}"
 OUTPUT_DIR="${OUTPUT_DIR:-${NAVSIM_EXP_ROOT}/closedloop/${SERVE}}"  # hugsim: the episode directory holding its pipes
+PYTHON_BIN="${RECOGDRIVE_PYTHON:-python}"
+AGENT_ARGS=(
+  agent=recogdrive_agent
+  agent._target_=recogdrive.adapters.navsim.ReCogDriveAgent
+  "agent.vlm_path=${VLM_PATH}"
+  agent.cache_hidden_state=False
+)
+if [[ -n "${AGENT_CONFIG_DIR:-}" ]]; then
+  if [[ ! -f "${AGENT_CONFIG_DIR}/agent/trained_agent.yaml" ]]; then
+    echo "AGENT_CONFIG_DIR must contain agent/trained_agent.yaml" >&2
+    exit 2
+  fi
+  # The evaluator serializes the training agent, including model family, LoRA and horizon.
+  AGENT_ARGS=(
+    "hydra.searchpath=[pkg://navsim.planning.script.config.common,file://${AGENT_CONFIG_DIR}]"
+    agent=trained_agent
+  )
+fi
 
-python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_recogdrive_infer.py" \
-  agent=recogdrive_agent \
-  agent._target_=recogdrive.adapters.navsim.ReCogDriveAgent \
-  agent.vlm_path="${VLM_PATH}" \
-  agent.cache_hidden_state=False \
+"${PYTHON_BIN}" "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_recogdrive_infer.py" \
+  "${AGENT_ARGS[@]}" \
+  "train_test_split=${TRAIN_TEST_SPLIT:-mini}" \
   infer.checkpoint="${CHECKPOINT}" \
   infer.serve="${SERVE}" \
   infer.port="${PORT}" \

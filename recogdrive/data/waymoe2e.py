@@ -140,7 +140,7 @@ def convert(tfrecords, out: Path, split: str, stride: int = 1, all_views: bool =
     frame_class = e2ed_frame_class()
     image_dir = (out / "images" / split).resolve()
     image_dir.mkdir(parents=True, exist_ok=True)
-    written = 0
+    written, seen_tokens = 0, set()
     for record_path in tfrecords:
         for index, raw in enumerate(read_tfrecord(record_path)):
             if index % stride:
@@ -152,7 +152,12 @@ def convert(tfrecords, out: Path, split: str, stride: int = 1, all_views: bool =
             if sample is None or "front" not in images:
                 continue
             history, target, command, status = sample
-            token = re.sub(r"[^A-Za-z0-9_.-]", "_", frame.frame.context.name)  # "<segment>-<frame index>"
+            token = frame.frame.context.name
+            if not token or not re.fullmatch(r"[A-Za-z0-9_.-]+", token) or token in (".", ".."):
+                raise ValueError(f"WOD-E2E frame context name is not a safe cache token: {token!r}")
+            if token in seen_tokens:
+                raise ValueError(f"duplicate WOD-E2E frame context name in input: {token!r}")
+            seen_tokens.add(token)
             camera_paths = []
             for view in CAMERAS.values():
                 if view not in images or (view != "front" and not all_views):
@@ -187,8 +192,18 @@ def nonzero_file(path: Path) -> bool:
 class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
     """Samples from `<cache_path>/<split>/<token>/{features,targets}.gz` (this converter or RAP-style caches)."""
 
-    def __init__(self, cache_path: str, split: str, future: int = 8, target_builders=None):
-        split_path = Path(cache_path) / split
+    def __init__(self, cache_path: str, split: str, future: int = 8, target_builders=None,
+                 labelled_only: bool = False):
+        self.cache_path = Path(cache_path).expanduser().resolve()
+        self.split = str(split)
+        self.labelled_only = bool(labelled_only)
+        if not self.split or self.split in (".", "..") or Path(self.split).name != self.split:
+            raise ValueError(f"Waymo E2E split must be one cache directory name, got {self.split!r}")
+        split_path = (self.cache_path / self.split).resolve()
+        try:
+            split_path.relative_to(self.cache_path)
+        except ValueError as exc:
+            raise ValueError(f"Waymo E2E split escapes cache root: {self.split!r}") from exc
         if not split_path.is_dir():
             raise FileNotFoundError(f"Waymo E2E cache split {split_path} does not exist")
         self.future = future
@@ -196,7 +211,10 @@ class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
         self.tokens = sorted(
             path for path in split_path.iterdir()
             if path.is_dir() and nonzero_file(path / "features.gz") and nonzero_file(path / "targets.gz")
+            and (not self.labelled_only or nonzero_file(path / "eval.gz"))
         )
+        if self.labelled_only and not self.tokens:
+            raise ValueError(f"no rater-labelled WOD-E2E frames in training cache split {split_path}")
         self.index = {path.name: path for path in self.tokens}
 
     def __len__(self) -> int:
@@ -229,15 +247,22 @@ class WaymoE2ECacheOnlyDataset(torch.utils.data.Dataset):
 
 @register("waymoe2e")
 def waymoe2e_loader(cfg, agent, split: str):
+    if split not in ("train", "val"):
+        raise ValueError(f"Waymo E2E loader supports train/val splits, got {split!r}")
     if cfg.cache_path is None:
         raise AssertionError("cache_path must be provided when using cached data")
     default = "training" if split == "train" else "val"
     key = "waymoe2e_train_split" if split == "train" else "waymoe2e_val_split"
+    labelled_only = bool(getattr(cfg, "waymoe2e_labelled_only", False)) if split == "train" else False
+    cache_split = str(getattr(cfg, key, default))
+    if labelled_only and cache_split.lower() in {"val", "valid", "validation", "test", "testing", "eval", "evaluation"}:
+        raise ValueError(f"labelled-only Waymo training cannot read validation/test cache split {cache_split!r}")
     return WaymoE2ECacheOnlyDataset(
         cache_path=cfg.cache_path,
-        split=getattr(cfg, key, default),
+        split=cache_split,
         future=horizon(agent),
         target_builders=agent.get_target_builders(),
+        labelled_only=labelled_only,
     )
 
 

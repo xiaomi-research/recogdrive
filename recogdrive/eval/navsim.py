@@ -17,6 +17,7 @@ import torch
 from omegaconf import OmegaConf
 
 from recogdrive.eval.registry import SubprocessEvaluator, average_row, register
+from recogdrive.infer import vlm_export_path
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class NavsimEvaluator(SubprocessEvaluator):
     def __init__(self, cfg, section, output_dir: Path):
         super().__init__(cfg, section, output_dir)
         self.loader = None
+        self.in_process = not bool(OmegaConf.select(cfg, "agent.cache_hidden_state"))
 
     def split(self) -> str:
         return str(OmegaConf.select(self.section, "split") or "navtest")
@@ -70,8 +72,9 @@ class NavsimEvaluator(SubprocessEvaluator):
         agent["checkpoint_path"] = str(ckpt)
         agent["grpo"] = False
         agent["cache_mode"] = False
-        vlm = ckpt.with_name(ckpt.stem + "_vlm")
-        if agent.get("train_backbone") and vlm.is_dir():
+        agent["cache_hidden_state"] = False
+        vlm = vlm_export_path(ckpt)
+        if vlm is not None:
             agent["vlm_path"] = str(vlm)
         agent["train_backbone"] = False
         (config_dir / "agent").mkdir(parents=True, exist_ok=True)
@@ -108,11 +111,18 @@ class NavsimEvaluator(SubprocessEvaluator):
         self.loader = None  # its worker transform holds the agent, VLM included
 
     def during_training(self, trainer, ckpt: Path, tag: str) -> None:
+        if getattr(trainer.agent, "cache_hidden_state", False):
+            # The cached training policy has no VLM for fresh evaluation scenes.
+            return super().during_training(trainer, ckpt, tag)
         out_dir = self.root / tag
         trajectories = self.generate(trainer, out_dir)
         if trainer.ctx.is_main:
             env = {**self.child_env(), "CUDA_VISIBLE_DEVICES": ""}
             self.launch(self.replay_command(trajectories, out_dir, tag), out_dir, tag, env)
+
+    def finish(self, final_ckpt):
+        # Online policies already generated their final replay before GPU release.
+        return super().finish(None if self.in_process else final_ckpt)
 
     def eval_loader(self, trainer):
         if self.loader is None:

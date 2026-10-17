@@ -4,7 +4,7 @@ A policy adapter is a torch.nn.Module with
 
     trajectory_sampling    num_poses and interval_length (0.5 s) of the predicted trajectory
     forward(features, targets=None, tokens=None)
-                           training: an object with `.loss` (extra metrics as attributes are logged);
+                           training: an object with `.loss` or a dict with `loss` (extra metrics are logged);
                            eval: {"pred_traj": (batch, num_poses, 3)} ego-frame poses (x, y, heading)
     compute_loss(features, targets, predictions)   validation loss from the eval forward
     get_optimizers()       an optimizer, or {"optimizer": ..., "lr_scheduler": ...}; the scheduler advances once per epoch,

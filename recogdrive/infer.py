@@ -1,4 +1,4 @@
-"""Inference with a trained checkpoint on any registered data source: `run_recogdrive_infer.py` (Hydra, the training
+"""Inference with a trained checkpoint on any registered planning data source: `run_recogdrive_infer.py` (Hydra, the training
 config) with
 
     infer.checkpoint=/path/to/epoch_xxx.ckpt   weights exported by the trainer (its `_vlm` export is used if present)
@@ -26,9 +26,28 @@ logger = logging.getLogger("recogdrive")
 EVAL_AGENT = {"checkpoint_path": None, "grpo": False, "cache_mode": False, "train_backbone": False}
 
 
-def load_weights(agent, ckpt: Path) -> None:
-    state = torch.load(ckpt, map_location="cpu")["state_dict"]
+def vlm_export_path(ckpt: Path, checkpoint=None):
+    """Honor new checkpoint metadata; retain the directory convention for old checkpoints."""
+    checkpoint = torch.load(ckpt, map_location="cpu") if checkpoint is None else checkpoint
+    expected = checkpoint.get("vlm_export")
+    if expected is not None and not isinstance(expected, bool):
+        raise ValueError(f"{ckpt} has invalid vlm_export metadata")
+    directory = ckpt.with_name(ckpt.stem + "_vlm")
+    if expected is True and not directory.is_dir():
+        raise FileNotFoundError(f"{ckpt} requires its full VLM export: {directory}")
+    return directory if expected is not False and directory.is_dir() else None
+
+
+def load_weights(agent, ckpt: Path, state=None) -> None:
+    from recogdrive.distributed.checkpoint import canonical
+
+    state = torch.load(ckpt, map_location="cpu")["state_dict"] if state is None else state
+    state = {canonical(k): v for k, v in state.items()}
     state = {k[len("agent."):] if k.startswith("agent.") else k: v for k, v in state.items()}
+    if any(cls.__module__ == "recogdrive.adapters.navsim.agent" and cls.__name__ == "ReCogDriveAgent"
+           for cls in type(agent).__mro__):
+        state = {key: value for key, value in state.items()
+                 if not key.startswith(("action_head.old_policy.", "action_head.ref_policy."))}
     missing, unexpected = agent.load_state_dict(state, strict=False)
     # checkpoints hold the trained parameters; frozen ones (the VLM from vlm_path, fixed planner parts) keep their values
     trainable = {name for name, p in agent.named_parameters() if p.requires_grad}
@@ -46,12 +65,13 @@ def load_agent(cfg, device):
         raise FileNotFoundError(f"infer.checkpoint={ckpt} is not a file")
     agent_cfg = OmegaConf.to_container(cfg.agent, resolve=True)
     agent_cfg.update({key: value for key, value in EVAL_AGENT.items() if key in agent_cfg})
-    vlm = ckpt.with_name(ckpt.stem + "_vlm")
-    if vlm.is_dir():
+    checkpoint = torch.load(ckpt, map_location="cpu")
+    vlm = vlm_export_path(ckpt, checkpoint)
+    if vlm is not None:
         agent_cfg["vlm_path"] = str(vlm)
     agent = instantiate(agent_cfg)
     check_policy(agent)
-    load_weights(agent, ckpt)
+    load_weights(agent, ckpt, checkpoint["state_dict"])
     return agent.to(device).eval()
 
 
@@ -68,11 +88,13 @@ def run(cfg) -> None:
         from recogdrive.closedloop import serve
 
         return serve(cfg, str(protocol))
+    name = str(OmegaConf.select(cfg, "infer.data_loader") or loader_name(cfg))
+    if name == "vqa":
+        raise ValueError("VQA answer generation uses recogdrive.eval.vqa; this entry writes planning trajectories")
     ctx = DistributedContext()
     ckpt = Path(str(OmegaConf.select(cfg, "infer.checkpoint")))
     agent = load_agent(cfg, ctx.device)
 
-    name = str(OmegaConf.select(cfg, "infer.data_loader") or loader_name(cfg))
     split = str(OmegaConf.select(cfg, "infer.split") or "val")
     dataset = with_worker_transform(LOADERS[name](cfg, agent, split), agent)
     predictions = predict(agent, make_loader(dataset, cfg.dataloader.params, False, ctx.rank, ctx.world_size), ctx)

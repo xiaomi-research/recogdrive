@@ -68,7 +68,13 @@ class Attention(nn.Module):
         
         if rotary_embedder is not None:
             position_ids = torch.arange(N_q, device=hidden_states.device).unsqueeze(0)
-            cos, sin = rotary_embedder(hidden_states, position_ids, seq_len=N_q)
+            # BF16 fusion across RoPE changes main's rounding in iterative DDIM sampling.
+            # Keep its graph boundary for BF16; FP32 retains the host-known length fast path.
+            bf16 = hidden_states.dtype == torch.bfloat16 or (
+                torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") == torch.bfloat16
+            )
+            seq_len = None if torch.compiler.is_compiling() and bf16 else N_q
+            cos, sin = rotary_embedder(hidden_states, position_ids, seq_len=seq_len)
             q = (q * cos) + (rotate_half(q) * sin)
             
             if is_self_attention:

@@ -22,14 +22,22 @@ force_cache_computation: true
 waymoe2e: false
 waymoe2e_train_split: training
 waymoe2e_val_split: val
+waymoe2e_labelled_only: false  # explicit Waymo RFS RL recipe filters labelled training frames
 seed: 0
-data_loader: null  # registered loader: navsim | waymoe2e | nuscenes | physicalai | mixture; null: navsim, or waymoe2e when waymoe2e=true
+data_loader: null  # registered loader: navsim | waymoe2e | nuscenes | physicalai | vqa | mixture; null: navsim, or waymoe2e when waymoe2e=true
 nuscenes:
   root: null  # directory holding samples/ and v1.0-*/
   version: v1.0-mini
 physicalai:
   root: null  # cache built by python -m recogdrive.data.physicalai
 mixture: []  # data_loader=mixture: [{loader: navsim, weight: 1.0}, {loader: waymoe2e, weight: 0.5, overrides: {cache_path: ...}}]
+mixture_batch_by_task: false  # alternate homogeneous VQA/planning global batches when true
+vqa:
+  jsonl: null  # shared fallback; records: {images: [...], question: ..., answer: ...}
+  train_jsonl: null
+  val_jsonl: null
+  image_root: null  # default: directory containing the split JSONL
+  max_length: null  # default: the VLM limit; override for multi-image VQA
 plugins: []  # modules imported at startup that register more loaders / evaluators
 augment:  # training split only; everything off by default
   history_dropout: 0.0  # probability of zeroing the ego history (prompt and planner input)
@@ -43,7 +51,7 @@ monitor:
 infer:  # run_recogdrive_infer.py
   checkpoint: null
   data_loader: null  # null: data_loader
-  split: val  # train | val | test (NAVSIM: every scene of train_test_split)
+  split: val  # train | val (NAVSIM also accepts test: every scene of train_test_split)
   visualize: 0  # draw the first N samples to <output_dir>/vis
   serve: null  # closed-loop server instead of predictions: alpasim | hugsim | neuroncap (recogdrive.closedloop)
   port: null  # its port (null: the protocol's default)
@@ -53,6 +61,7 @@ skip_validation: false
 
 train:
   strategy: fsdp  # fsdp | ddp
+  find_unused_parameters: false  # DDP alternating VQA/planning heads need true
   precision: bf16  # compute dtype: bf16 | fp32. fsdp keeps fp32 master shards; ddp bf16 keeps bf16 weights and needs Muon (fp32 masters)
   reshard_after_forward: false  # false: fastest; true: least memory, re-gathers in backward
   hsdp_shard_size: null  # multi-node: GPUs per node, shards within a node and replicates across nodes
@@ -71,7 +80,7 @@ train:
   ema_reference_batch: 128  # global batch ema_decay is tuned for; other batch sizes use decay ** (batch / 128)
 
 evaluator:
-  name: null  # navsim | nuscenes | waymoe2e | physicalai | drivelm | lingoqa | drivebench, or a list; evaluator.<name> overrides the shared keys
+  name: null  # navsim | nuscenes | waymoe2e | physicalai | drivelm | lingoqa | drivebench | neuroncap | hugsim | alpasim, or a list
   every_n_epochs: 0  # 0: only the final checkpoint
   on_end: true
   split: navtest  # navsim: navtest, or on NAVSIM 2.0 navhard_two_stage / navsafe_two_stage (two-stage EPDMS)
@@ -94,10 +103,38 @@ evaluator:
     data_overrides: {}
   physicalai:  # PhysicalAI-AV L2 at 1 / 2 / 3 s, ADE / FDE, in-process on the physicalai val split
     data_overrides: {}
+  neuroncap: &closedloop_eval  # external official simulator argv and its metrics; enable explicitly
+    simulator_command: []
+    simulator_commands: []  # optional ordered scene argv lists; exclusive with simulator_command
+    episode_result_files: []  # multi-command plan requires one fresh artifact per command
+    aggregate_command: []  # invoke the official benchmark aggregator; do not average episode scores here
+    aggregate_cwd: null
+    aggregate_timeout_s: 3600
+    simulator_cwd: null
+    simulator_env: {}
+    simulator_timeout_s: 3600
+    result_file: metrics.json
+    metrics: {}
+    policy_owned_by_simulator: false
+    policy_startup_timeout_s: 300
+    policy_host: 127.0.0.1
+    policy_port: null
+    policy_env: {}
+    policy_overrides: []
+    readiness: null
+  alpasim:
+    <<: *closedloop_eval
+    result_file: aggregate/metrics_results.txt
+  hugsim:
+    <<: *closedloop_eval
+    policy_owned_by_simulator: true  # HUGSIM starts its own policy per episode after creating FIFOs
+    simulator_base_config: null  # official HUGSIM base YAML, copied with this run's policy launcher/output path
+    result_file: hugsim_ltf/*/eval.json  # one episode; use an explicit official aggregate artifact for many episodes
 
 dataloader:
   params:
     batch_size: 16  # number of samples per batch
+    drop_last: false  # main default: keep the final partial batch
     num_workers: 8  # number of workers for data loading
     pin_memory: true  # pin memory for faster GPU transfer
     prefetch_factor: 2  # number of samples loaded in advance by each worker

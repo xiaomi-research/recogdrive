@@ -134,6 +134,8 @@ def convert(src: Path, out: Path, all_views: bool = False, stride: int = 1, max_
 
 @register("physicalai")
 def physicalai_loader(cfg, agent, split: str):
+    if split not in ("train", "val"):
+        raise ValueError(f"PhysicalAI loader supports train/val splits, got {split!r}")
     root = OmegaConf.select(cfg, "physicalai.root")
     if not root:
         raise ValueError("set physicalai.root to a cache built by python -m recogdrive.data.physicalai")

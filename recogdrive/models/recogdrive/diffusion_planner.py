@@ -81,14 +81,30 @@ class GRPOConfig:
     gamma_denoising: float = 0.6
     flow_noise_level: float = 0.7
     flow_sde_type: Literal['sde', 'cps'] = 'sde'
-    # TRL/DeepSeek: μ>1 makes clip real; μ=1 ⇒ old_logprob = logπ.detach()
+    # PPO inner updates; main mode requires one.
     num_iterations: int = 1
     clip_eps: float = 0.2
     kl_coef: float = 0.0
     bc_coeff: float = 0.1
     sample_time: int = 8
-    
+
     reference_policy_checkpoint: str = "/path/to/IL_Model.ckpt"
+    # ``main`` matches the historical REINFORCE loss. Flow applies it to Flow
+    # log-probabilities, which is an extension of the legacy DDIM setup.
+    objective: Literal["main", "ppo"] = "main"
+
+    def __post_init__(self):
+        self.validate()
+
+    def validate(self):
+        if int(self.sample_time) < 2:
+            raise ValueError("GRPO sample_time must be at least 2 for group-relative advantages")
+        if self.objective not in ("main", "ppo"):
+            raise ValueError(f"Unsupported GRPO objective: {self.objective!r}; expected 'main' or 'ppo'.")
+        if self.objective == "main" and int(self.num_iterations) != 1:
+            raise ValueError("GRPO objective 'main' requires num_iterations=1; use 'ppo' for rollout reuse.")
+        if self.objective == "main" and float(self.kl_coef) != 0:
+            raise ValueError("GRPO objective 'main' matches the historical loss only with kl_coef=0; use 'ppo' for KL.")
 
 
 @dataclass
@@ -286,6 +302,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def init_grpo(self, cfg: GRPOConfig):
         """Initializes components and hyperparameters for GRPO training."""
+        cfg.validate()
+        self.grpo_objective = cfg.objective
         self.denoised_clip_value = cfg.denoised_clip_value
         self.eval_randn_clip_value = cfg.eval_randn_clip_value
         self.randn_clip_value = cfg.randn_clip_value
@@ -1028,23 +1046,30 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self,
         rollout: GRPORollout,
         deterministic: bool = False,
+        vl_features: Optional[torch.Tensor] = None,
     ) -> BatchFeature:
-        """One inner update on a cached rollout. Trainer may call this μ times."""
+        """One inner update on a cached rollout; optionally use this update's live VLM features."""
+        policy_vl = rollout.vl if vl_features is None else vl_features
         log_probs = self.flat_step_logprob(
             self.get_logprobs(
-                rollout.vl, rollout.his_rep, rollout.status_rep, rollout.chains, deterministic=False
+                policy_vl, rollout.his_rep, rollout.status_rep, rollout.chains, deterministic=False
             )
         )
-        policy_loss, ratio = clipped_pg_loss(
-            log_probs, rollout.old_logprobs, rollout.adv_weighted, self.clip_eps
-        )
+        if self.grpo_objective == "main":
+            policy_loss = -(log_probs * rollout.adv_weighted).mean()
+            ratio = (log_probs.detach() - rollout.old_logprobs).exp()
+            clip_frac = log_probs.new_zeros(())
+        else:
+            policy_loss, ratio = clipped_pg_loss(
+                log_probs, rollout.old_logprobs, rollout.adv_weighted, self.clip_eps
+            )
+            clip_frac = ((ratio < 1.0 - self.clip_eps) | (ratio > 1.0 + self.clip_eps)).float().mean()
         total_loss = policy_loss
-        clip_frac = ((ratio < 1.0 - self.clip_eps) | (ratio > 1.0 + self.clip_eps)).float().mean()
 
         bc_loss = log_probs.new_zeros(())
         if self.bc_coeff > 0 and rollout.teacher_chains is not None:
             bc_logp = self.get_logprobs(
-                rollout.vl, rollout.his, rollout.status, rollout.teacher_chains, deterministic=False
+                policy_vl, rollout.his, rollout.status, rollout.teacher_chains, deterministic=False
             ).clamp(min=-5, max=2)
             if self.config.sampling_method == "flow":
                 bc_logp = bc_logp.mean(dim=1)
@@ -1102,7 +1127,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             finally:
                 if old_bc is not None:
                     self.bc_coeff = old_bc
-        return self.grpo_loss_from_rollout(rollout, deterministic=deterministic)
+        return self.grpo_loss_from_rollout(rollout, deterministic=deterministic, vl_features=vl_features)
 
     def norm_odo(self, trajectory: torch.Tensor) -> torch.Tensor:
         """Normalizes waypoint or delta actions to the range [-1, 1]."""

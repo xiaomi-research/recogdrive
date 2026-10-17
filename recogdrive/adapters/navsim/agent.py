@@ -10,6 +10,7 @@ import inspect
 import itertools
 import os
 import torch
+from types import SimpleNamespace
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from transformers.feature_extraction_utils import BatchFeature
@@ -108,15 +109,20 @@ class ReCogDriveAgent(AbstractAgent):
         flow_noise_level: float = 0.7,
         flow_sde_type: str = "sde",
         grpo_num_iterations: int = 1,
+        grpo_objective: str = "main",
         grpo_clip_eps: float = 0.2,
         grpo_kl_coef: float = 0.0,
         grpo_bc_coeff: float = 0.1,
         grpo_sample_time: int = 8,
         grpo_reward_workers: Optional[int] = None,
+        grpo_reward: str = "navsim_pdm",
+        grpo_reward_cache_path: Optional[str] = None,
+        grpo_reward_split: str = "training",
         optimizer_type: str = "adamw",
+        lr_schedule: str = "main",
         cameras: Optional[List[str]] = None,
-        front_short_side: int = 960,
-        side_short_side: int = 480,
+        front_short_side: Optional[int] = 960,
+        side_short_side: Optional[int] = 480,
         vlm_max_length: Optional[int] = None,
         action_norm_min: Optional[List[float]] = None,
         action_norm_max: Optional[List[float]] = None,
@@ -126,13 +132,14 @@ class ReCogDriveAgent(AbstractAgent):
         lora_targets: Optional[List[str]] = None,
     ):
         """cam_type 'multi' feeds `cameras` (default: every surround view the data source has) with the
-        front view rescaled to front_short_side and the others to side_short_side; 'single' feeds the
-        native-resolution front view. vlm_max_length (the padded prompt length) defaults to 2800 for single view and
+        front view rescaled to front_short_side and the others to side_short_side (None keeps native size); 'single'
+        feeds the native-resolution front view. vlm_max_length (the padded prompt length) defaults to 2800 for single view and
         8704 for multi-view (WOD-E2E's 8 views take ~8240 tokens, nuScenes' 6 ~6450). The prediction horizon is
         trajectory_sampling.num_poses. lora_rank > 0 trains LoRA adapters on the frozen VLM (lora_targets, default
         the language model's attention and MLP projections); train_backbone fine-tunes the whole VLM instead.
-        grpo_reward_workers: processes per rank scoring the GRPO reward (None: half the CPU cores per rank, at most
-        16; 0: in the training process)."""
+        grpo_reward_workers: processes per rank scoring NAVSIM PDM (None: half the CPU cores per rank, at most
+        16; 0: in the training process). Waymo rewards explicitly use logged-target ADE or labelled training-cache RFS
+        with at least a 5 s horizon; the NAVSIM PDM default is unchanged."""
         super().__init__(trajectory_sampling) if AGENT_TAKES_SAMPLING else super().__init__()
         self._trajectory_sampling = self.trajectory_sampling = trajectory_sampling
         if cam_type not in ("single", "multi"):
@@ -147,6 +154,19 @@ class ReCogDriveAgent(AbstractAgent):
         self.cache_hidden_state = cache_hidden_state
         self._lr = lr
         self.grpo = grpo
+        self.grpo_reward = str(grpo_reward).lower()
+        waymo_reward = None
+        if self.grpo_reward not in ("navsim_pdm", "waymo_rfs", "waymo_ade"):
+            raise ValueError(f"grpo_reward must be navsim_pdm, waymo_rfs or waymo_ade, got {grpo_reward!r}")
+        if self.grpo and self.grpo_reward in ("waymo_rfs", "waymo_ade"):
+            if not grpo_reward_cache_path:
+                raise ValueError("Waymo GRPO needs grpo_reward_cache_path pointing to training caches")
+            if self._trajectory_sampling.time_horizon < 5 or abs(self._trajectory_sampling.interval_length - 0.5) > 1e-6:
+                raise ValueError("Waymo GRPO needs at least a 5 s horizon with 0.5 s poses")
+            from recogdrive.adapters.waymoe2e.reward import WaymoADEReward, WaymoRFSReward
+
+            reward_class = WaymoRFSReward if self.grpo_reward == "waymo_rfs" else WaymoADEReward
+            waymo_reward = reward_class(grpo_reward_cache_path, grpo_reward_split)
         self.backbone = None
         self.metric_cache_path = metric_cache_path
         self.reference_policy_checkpoint = reference_policy_checkpoint
@@ -154,12 +174,22 @@ class ReCogDriveAgent(AbstractAgent):
         self.train_backbone = train_backbone
         if lora_rank and train_backbone:
             raise ValueError("train_backbone fine-tunes the whole VLM and lora_rank adds adapters to a frozen one; set one")
+        if (train_backbone or lora_rank) and (cache_hidden_state or cache_mode):
+            trainable_mode = "train_backbone" if train_backbone else "lora_rank"
+            raise ValueError(
+                f"{trainable_mode} needs the online VLM: set cache_hidden_state=False and cache_mode=False"
+            )
         self.vlm_trainable = bool(train_backbone or lora_rank)
         self.training_target = validate_training_target(training_target)
         self.vlm_hidden_size = vlm_hidden_size
         self.flow_noise_level = flow_noise_level
         self.flow_sde_type = flow_sde_type
         self.grpo_num_iterations = max(int(grpo_num_iterations), 1)
+        self.grpo_objective = str(grpo_objective).lower()
+        if self.grpo_objective not in ("main", "ppo"):
+            raise ValueError(f"grpo_objective must be 'main' or 'ppo', got {grpo_objective!r}")
+        if self.grpo and self.grpo_objective == "main" and self.grpo_num_iterations != 1:
+            raise ValueError("GRPO objective 'main' requires grpo_num_iterations=1; use grpo_objective='ppo' for rollout reuse")
         self.grpo_clip_eps = float(grpo_clip_eps)
         self.grpo_kl_coef = float(grpo_kl_coef)
         self.grpo_bc_coeff = float(grpo_bc_coeff)
@@ -167,12 +197,15 @@ class ReCogDriveAgent(AbstractAgent):
         self.optimizer_type = str(optimizer_type or "adamw").lower()
         if self.optimizer_type not in ("adamw", "muon"):
             raise ValueError(f"Unsupported optimizer_type: {optimizer_type!r}")
+        self.lr_schedule = str(lr_schedule).lower()
+        if self.lr_schedule not in ("main", "step"):
+            raise ValueError(f"lr_schedule must be 'main' or 'step', got {lr_schedule!r}")
         self._grpo_rollout = None
         if self.vlm_hidden_size is None and self.vlm_type.lower() == "qwen" and self.vlm_path:
             self.vlm_hidden_size = self.infer_vlm_hidden_size(self.vlm_path)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
-        device = f"cuda:{local_rank}"
+        device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
         self.device = device
         if not self.cache_hidden_state and not self.cache_mode:
             print("Agent running in 'no-cache' mode. Initializing internal backbone.")
@@ -190,9 +223,6 @@ class ReCogDriveAgent(AbstractAgent):
                 p.requires_grad = train_backbone or (bool(lora_rank) and ".lora_" in name)
             if not self.vlm_trainable:
                 self.backbone.eval()
-        elif lora_rank:
-            raise ValueError("lora_rank needs the online VLM: set cache_hidden_state=False and cache_mode=False")
-
         embedding_dims = {"large": 1536, "small": 384}
         if self.dit_type not in embedding_dims:
             raise ValueError(f"dit_type must be one of {sorted(embedding_dims)}, got {self.dit_type!r}")
@@ -213,6 +243,7 @@ class ReCogDriveAgent(AbstractAgent):
         cfg.vlm_size = self.vlm_size
         cfg.grpo_cfg.flow_noise_level = self.flow_noise_level
         cfg.grpo_cfg.flow_sde_type = self.flow_sde_type
+        cfg.grpo_cfg.objective = self.grpo_objective
 
         if self.grpo:
             cfg.grpo_cfg.reference_policy_checkpoint = self.reference_policy_checkpoint
@@ -222,14 +253,17 @@ class ReCogDriveAgent(AbstractAgent):
             cfg.grpo_cfg.bc_coeff = self.grpo_bc_coeff
             cfg.grpo_cfg.sample_time = self.grpo_sample_time
             
-        self.action_head = ReCogDriveDiffusionPlanner(cfg).cuda()
+        self.action_head = ReCogDriveDiffusionPlanner(cfg).to(device)
         if self.grpo:
-            from recogdrive.adapters.navsim.reward import PDMReward
+            if self.grpo_reward in ("waymo_rfs", "waymo_ade"):
+                self.action_head.reward_fn = waymo_reward
+            else:
+                from recogdrive.adapters.navsim.reward import PDMReward
 
-            if grpo_reward_workers is None:
-                ranks = int(os.getenv("LOCAL_WORLD_SIZE", "1"))
-                grpo_reward_workers = min(16, max(1, (os.cpu_count() or 2) // (2 * ranks)))
-            self.action_head.reward_fn = PDMReward(self.metric_cache_path, grpo_reward_workers)
+                if grpo_reward_workers is None:
+                    ranks = int(os.getenv("LOCAL_WORLD_SIZE", "1"))
+                    grpo_reward_workers = min(16, max(1, (os.cpu_count() or 2) // (2 * ranks)))
+                self.action_head.reward_fn = PDMReward(self.metric_cache_path, grpo_reward_workers)
 
     def name(self) -> str:
         return self.__class__.__name__
@@ -247,6 +281,23 @@ class ReCogDriveAgent(AbstractAgent):
             cameras=self.cameras,
             short_sides=self.short_sides,
             image_augment=image_augment,
+        )
+
+    def vqa_worker_transform(self, max_length: Optional[int] = None):
+        """CPU preprocessing for raw VQA records, using this agent's shared VLM tokenizer/processor."""
+        if self.backbone is None:
+            raise ValueError("VQA preprocessing needs the online VLM; set cache_hidden_state=False and cache_mode=False")
+        from recogdrive.models.recogdrive.utils.vqa_preprocess import prepare_vqa_features
+
+        if max_length is None:
+            max_length = self.backbone.max_length
+        return functools.partial(
+            prepare_vqa_features,
+            tokenizer=self.backbone.tokenizer,
+            model_type=self.vlm_type,
+            max_length=int(max_length),
+            num_image_token=getattr(self.backbone, "num_image_token", 256),
+            short_sides=self.short_sides,
         )
 
     def initialize(self) -> None:
@@ -337,6 +388,29 @@ class ReCogDriveAgent(AbstractAgent):
     def clear_grpo_rollout(self) -> None:
         self._grpo_rollout = None
 
+    @staticmethod
+    def _batch_task(features: Dict[str, Any]) -> str:
+        task = features.get("task", "planning")
+        if isinstance(task, (list, tuple)):
+            if not task:
+                raise ValueError("task batch is empty")
+            if any(item != task[0] for item in task[1:]):
+                raise ValueError(f"mixed task batch is unsupported: {sorted(set(task))}")
+            task = task[0]
+        if task not in ("planning", "vqa"):
+            raise ValueError(f"unsupported batch task {task!r}; expected 'planning' or 'vqa'")
+        return task
+
+    def _forward_vqa(self, features: Dict[str, Any]):
+        if self.training and not self.vlm_trainable:
+            raise RuntimeError("VQA training requires a trainable VLM; enable train_backbone or lora_rank")
+        if self.backbone is None:
+            raise RuntimeError("VQA needs the online VLM; set cache_hidden_state=False and cache_mode=False")
+        for key, tensor in features.items():
+            if isinstance(tensor, torch.Tensor):
+                features[key] = tensor.to(self.device, non_blocking=True)
+        return SimpleNamespace(loss=self.backbone.forward_vqa(features))
+
     def forward(
         self,
         features: Dict[str, torch.Tensor],
@@ -344,9 +418,12 @@ class ReCogDriveAgent(AbstractAgent):
         tokens_list=None,
         reuse_rollout: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        if reuse_rollout and self.grpo and self._grpo_rollout is not None:
+        if self._batch_task(features) == "vqa":
+            return self._forward_vqa(features)
+        reuse_rollout = reuse_rollout and self.grpo and self._grpo_rollout is not None
+        if reuse_rollout and not self.vlm_trainable:
             return self.action_head.grpo_loss_from_rollout(self._grpo_rollout)
-        if self.training and self.grpo and tokens_list is not None:
+        if self.training and self.grpo and not reuse_rollout and tokens_list is not None:
             # metric caches load during the VLM forward
             self.action_head.reward_fn.prefetch(list(tokens_list), self.grpo_sample_time)
 
@@ -372,11 +449,11 @@ class ReCogDriveAgent(AbstractAgent):
 
         for key, tensor in features.items():
             if isinstance(tensor, torch.Tensor):
-                features[key] = tensor.cuda(non_blocking=True)
+                features[key] = tensor.to(self.device, non_blocking=True)
         if targets:
             for key, tensor in targets.items():
                 if isinstance(tensor, torch.Tensor):
-                    targets[key] = tensor.cuda(non_blocking=True)
+                    targets[key] = tensor.to(self.device, non_blocking=True)
 
         model_dtype = next(self.action_head.parameters()).dtype
 
@@ -401,7 +478,7 @@ class ReCogDriveAgent(AbstractAgent):
             else:
                 pixel_values_list = [load_image(path) for path in image_paths]
                 num_patches_list = [p.shape[0] for p in pixel_values_list]
-                pixel_values_cat = torch.cat(pixel_values_list, dim=0).cuda(non_blocking=True)
+                pixel_values_cat = torch.cat(pixel_values_list, dim=0).to(self.device, non_blocking=True)
 
             vlm_ctx = torch.no_grad() if not self.vlm_trainable else contextlib.nullcontext()
             with vlm_ctx:
@@ -422,10 +499,16 @@ class ReCogDriveAgent(AbstractAgent):
             return self.action_head(last_hidden_state, action_inputs)
         elif self.training and self.grpo:
             action_inputs = BatchFeature(data={"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
+            if reuse_rollout:
+                return self.action_head.grpo_loss_from_rollout(
+                    self._grpo_rollout, vl_features=last_hidden_state
+                )
             self._grpo_rollout = self.action_head.collect_grpo_rollout(
                 last_hidden_state, action_inputs, tokens_list
             )
-            return self.action_head.grpo_loss_from_rollout(self._grpo_rollout)
+            return self.action_head.grpo_loss_from_rollout(
+                self._grpo_rollout, vl_features=last_hidden_state
+            )
         else: 
             action_inputs = BatchFeature({"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype)})
             return self.action_head.get_action(last_hidden_state.to(model_dtype), action_inputs)
@@ -460,10 +543,12 @@ class ReCogDriveAgent(AbstractAgent):
 
 
     def compute_loss(self, features: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor], predictions: Dict[str, torch.Tensor]) -> torch.Tensor:
+        if self._batch_task(features) == "vqa":
+            return predictions["loss"] if isinstance(predictions, dict) else predictions.loss
         if self.training and self.grpo:
             return predictions
         elif self.training:
-            return predictions.loss
+            return predictions["loss"] if isinstance(predictions, dict) else predictions.loss
         else:
             target_trajectory = self.target_to_waypoint(targets["trajectory"]).to(predictions["pred_traj"].device)
             return torch.nn.functional.l1_loss(predictions["pred_traj"], target_trajectory)
@@ -471,10 +556,8 @@ class ReCogDriveAgent(AbstractAgent):
     def get_optimizers(
         self, total_steps: Optional[int] = None, steps_per_epoch: Optional[int] = None
     ) -> Union[Optimizer, Dict[str, LRScheduler]]:
-        """Warmup (3 epochs for imitation learning, none for GRPO) and cosine decay over the whole training. Given the
-        training length in optimizer steps (the recogdrive trainer) the schedule advances every step; without it
-        (Lightning) it advances every epoch over the recipe's 200 (IL) / 10 (GRPO) epochs."""
-        params = list(self.action_head.parameters())
+        """`main` keeps the original epoch schedule; `step` schedules over trainer optimizer steps."""
+        params = [p for p in self.action_head.parameters() if p.requires_grad]
         if self.backbone is not None and self.vlm_trainable:
             params += [p for p in self.backbone.parameters() if p.requires_grad]
 
@@ -485,10 +568,14 @@ class ReCogDriveAgent(AbstractAgent):
                                           fused=torch.cuda.is_available())
         
         warmup_epochs, min_lr, recipe_epochs = (0, 0.0, 10) if self.grpo else (3, 1e-6, 200)
-        if total_steps:
+        if self.lr_schedule == "step" and total_steps:
             scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=min_lr, total_steps=total_steps,
                                     warmup_steps=warmup_epochs * (steps_per_epoch or 0))
             return {'optimizer': optimizer, 'lr_scheduler': {'scheduler': scheduler, 'interval': 'step'}}
+        if self.lr_schedule == "main":
+            scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=min_lr, total_steps=recipe_epochs,
+                                    warmup_steps=warmup_epochs, legacy=True)
+            return {'optimizer': optimizer, 'lr_scheduler': {'scheduler': scheduler, 'interval': 'epoch'}}
         scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=min_lr, total_steps=recipe_epochs,
                                 warmup_steps=warmup_epochs)
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}

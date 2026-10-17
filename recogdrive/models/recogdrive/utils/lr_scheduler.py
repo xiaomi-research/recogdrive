@@ -10,12 +10,13 @@ class WarmupCosLR(_LRScheduler):
     A step is one call of step(): an optimizer step or an epoch, whichever the caller steps on."""
 
     def __init__(
-        self, optimizer, min_lr, lr, warmup_steps, total_steps, last_epoch=-1
+        self, optimizer, min_lr, lr, warmup_steps, total_steps, last_epoch=-1, legacy=False
     ) -> None:
         self.min_lr = min_lr
         self.lr = lr
         self.total_steps = total_steps
-        self.warmup_steps = min(warmup_steps, total_steps)
+        self.legacy = legacy
+        self.warmup_steps = warmup_steps if legacy else min(warmup_steps, total_steps)
         super(WarmupCosLR, self).__init__(optimizer, last_epoch)
 
     def state_dict(self):
@@ -29,8 +30,13 @@ class WarmupCosLR(_LRScheduler):
         if self.last_epoch < self.warmup_steps:
             lr = self.lr * (self.last_epoch + 1) / self.warmup_steps
         else:
-            progress = min(1.0, (self.last_epoch - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps))
-            lr = self.min_lr + 0.5 * (self.lr - self.min_lr) * (1 + math.cos(math.pi * progress))
+            if self.legacy:
+                angle = math.pi * (self.last_epoch - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+            else:
+                progress = (self.last_epoch - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+                progress = min(1.0, progress)
+                angle = math.pi * progress
+            lr = self.min_lr + 0.5 * (self.lr - self.min_lr) * (1 + math.cos(angle))
         if "lr_scale" in self.optimizer.param_groups[0]:
             return [lr * group["lr_scale"] for group in self.optimizer.param_groups]
         return [lr for _ in self.optimizer.param_groups]

@@ -48,15 +48,13 @@ The same benchmarks run as training evaluators, e.g. `evaluator.name=lingoqa eva
 
 You can download our pretrained **ReCogDrive VLM** from [ReCogDrive VLM](https://huggingface.co/collections/owl10/recogdrive-68bafa143de172bab8de5752).  
 
-For the diffusion planner training, the first step is to **cache datasets for faster training**.  
-Since DiT training converges relatively slowly, training VLM and DiT jointly can be very time-consuming. To accelerate, we cache the hidden states output by the VLM, which enables much faster training.  
-> ⚠️ Note: Caching requires approximately **1–2 TB of disk space**. We are also working on faster training methods.  
+Run these commands from the repository root. The default main-compatible recipe uses cached VLM hidden states and waypoint labels. Rebuilding hidden states requires the exact VLM weights, view configuration and prediction horizon. Online encoding is explicit: set `CACHE_HIDDEN_STATE=False`, build the image-path cache, and use that cache for LoRA, full VLM tuning or mixed VQA/planning.
 
 
-### Step 1: Cache hidden states
+### Step 1: Cache inputs and labels
 ```bash
 # cache dataset for training
-sh cache_dataset/run_caching_recogdrive_hidden_state.sh
+VLM_PATH=/path/to/ReCogDrive_2b GPUS=4 bash scripts/cache_dataset/run_caching_recogdrive_hidden_state.sh
 ```
 
 ### Step 2: Configure and run training
@@ -64,13 +62,13 @@ sh cache_dataset/run_caching_recogdrive_hidden_state.sh
 Set the paths (`VLM_PATH`, `CACHE_PATH`, `GPUS`, ...) and start training:
 
 ```bash
-sh scripts/train/run_recogdrive_internvl3_waypoint_il.sh
+bash scripts/train/run_recogdrive_internvl3_waypoint_il.sh
 ```
 
 By default, the diffusion planner trains with waypoint targets. You can also train with delta targets:
 
 ```bash
-sh scripts/train/run_recogdrive_internvl3_delta_il.sh
+bash scripts/train/run_recogdrive_internvl3_delta_il.sh
 ```
 
 The training cache always stores waypoint targets. In delta mode, targets are converted after loading the cache, so waypoint and delta training can share the same `CACHE_PATH`. Delta targets are per-step trajectory velocities computed from NAVSIM waypoints. The delta normalization constants (`DELTA_NORM_MIN` / `DELTA_NORM_MAX`) are built into the planner and were recomputed from `Navsim_Traj/dataset_navsim_traj.jsonl` in [ReCogDrive_Pretraining](https://huggingface.co/datasets/owl10/ReCogDrive_Pretraining/tree/main/Navsim_Traj), so nothing needs to be passed.
@@ -91,12 +89,28 @@ The `recogdrive` trainer (FSDP2 or DDP, torchrun, one or several nodes) is launc
 Others in `scripts/train/` cover DDPM and flow sampling, Muon, NAVSIM 2.0, UniDriveVLA's Qwen-VL and WOD-E2E. These wrappers call `scripts/train/run_recogdrive_train.sh`. Override paths with environment variables such as `VLM_PATH`, `CACHE_PATH`, `CHECKPOINT`, and `METRIC_CACHE_PATH`; any extra arguments are passed to Hydra, for example:
 
 ```bash
-sh scripts/train/run_recogdrive_internvl3_waypoint_il.sh \
+bash scripts/train/run_recogdrive_internvl3_waypoint_il.sh \
   train.activation_checkpointing=[LightningDiTBlock] \
   evaluator.name=navsim evaluator.metric_cache_path=/path/to/metric_cache
 ```
 
-The `train.*` block of `default_training.yaml` sets parallelism and precision (`strategy`, `precision`, `reshard_after_forward`, `hsdp_shard_size`, `replicate_frozen`, `compile`, `activation_checkpointing`, `activation_checkpointing_layers`, `resume`). `data_loader` picks a registered dataset loader (`navsim`, `waymoe2e`, `nuscenes`, `physicalai`, `mixture`); a new dataset registers a loader (see below) and returns `(features, targets, token)` samples. The full ReCogDrive model is kept in three places with identical code apart from import lines: `recogdrive/models/recogdrive/` + `recogdrive/adapters/navsim/` (used by the training launchers via `agent._target_`), and `navsim1.1/navsim/agents/recogdrive/` and `navsim2.0/navsim/agents/recogdrive/` (used by the NAVSIM evaluation scripts through `agent=recogdrive_agent`). Change all three together; checkpoints load in either. The agent's `worker_transform()` (prompt, image path, InternVL tiles) runs in the dataloader workers for every data loader. The VLM backbone returns the same final hidden states as before without the LM head's logits over the whole prompt, which nothing used: InternVL runs only its language model's decoder, Qwen-VL keeps the logits of one position (InternVL3-2B, 4 samples per RTX 3090: about 7% faster steps and 3.8 GiB less memory). InternVL's language model attends with flex attention: the left-padded prompts need a causal + padding mask, which puts SDPA on a kernel whose backward costs 8x its forward, while flex skips the masked blocks (outputs equal up to bf16 rounding, as close to fp32 as SDPA's). On an RTX 3090 planner-only steps are 13% faster (1.06 s instead of 1.22 s) and LoRA steps 33% faster (2.47 s instead of 3.68 s). `evaluator.*` scores checkpoints with the NAVSIM tree's own PDMS/EPDMS entry. Periodic evaluation (`evaluator.every_n_epochs`) generates the trajectories with the training model on the training GPUs and runs the official scoring on CPU in the background, so it never competes with training for GPUs; `evaluator.split_overrides` can restrict it to a scene subset. The final evaluation runs the trained agent after training has released the GPUs. Other GPU evaluators (VQA) wait for the end of training unless `evaluator.gpus` names GPUs training does not use. `optimizer_type=muon` works with FSDP2: each matrix is orthogonalized once, by one rank. Its orthogonalized updates are scaled by `0.2 * sqrt(max(rows, cols))` to AdamW's update RMS (Moonlight's calibration, used by DMuon / WALL-OSS), so Muon runs with the learning rate and weight decay tuned for AdamW. Muon does not need fp32 parameters: as in DMuon (WALL-OSS), a parameter kept in bf16 gets an fp32 master copy in the optimizer, which takes the momentum, weight decay and update and is written back to the bf16 weight. So `train.strategy=ddp train.precision=bf16` trains Muon with bf16 weights (gradients are averaged in fp32, the EMA is kept in fp32); optimizers without master copies are refused there, and FSDP keeps fp32 master shards for every optimizer. The training log reports `step_ms`, `data_wait_ms`, and `samples/s`. The learning rate warms up (3 epochs for imitation learning, none for RL) and then follows a cosine to its minimum over the actual training: the trainer passes the length in optimizer steps (steps per epoch × `trainer.params.max_epochs`, or `max_steps` when that is shorter) and the schedule advances every optimizer step.
+The `train.*` block of `default_training.yaml` sets parallelism and precision (`strategy`, `precision`, `reshard_after_forward`, `hsdp_shard_size`, `replicate_frozen`, `compile`, `activation_checkpointing`, `activation_checkpointing_layers`, `resume`). `data_loader` picks a registered dataset loader (`navsim`, `waymoe2e`, `nuscenes`, `physicalai`, `mixture`); a new dataset registers a loader (see below) and returns `(features, targets, token)` samples. The ReCogDrive model has one implementation in `recogdrive/models/recogdrive/` + `recogdrive/adapters/navsim/`. Both NAVSIM trees retain compatibility imports under `navsim/agents/recogdrive/`, so training and evaluation use the same code and checkpoint layout. The agent's `worker_transform()` (prompt, image path, InternVL tiles) runs in the dataloader workers for every data loader. The VLM backbone returns the same final hidden states as before without the LM head's logits over the whole prompt, which nothing used: InternVL runs only its language model's decoder, Qwen-VL keeps the logits of one position (InternVL3-2B, 4 samples per RTX 3090: about 7% faster steps and 3.8 GiB less memory). InternVL's language model attends with flex attention: the left-padded prompts need a causal + padding mask, which puts SDPA on a kernel whose backward costs 8x its forward, while flex skips the masked blocks (outputs equal up to bf16 rounding, as close to fp32 as SDPA's). On an RTX 3090 planner-only steps are 13% faster (1.06 s instead of 1.22 s) and LoRA steps 33% faster (2.47 s instead of 3.68 s). `evaluator.*` scores checkpoints with the NAVSIM tree's own PDMS/EPDMS entry. Periodic evaluation (`evaluator.every_n_epochs`) generates the trajectories with the training model on the training GPUs and runs the official scoring on CPU in the background, so it never competes with training for GPUs; `evaluator.split_overrides` can restrict it to a scene subset. The final evaluation runs the trained agent after training has released the GPUs. Other GPU evaluators (VQA) wait for the end of training unless `evaluator.gpus` names GPUs training does not use. `optimizer_type=muon` works with FSDP2: each matrix is orthogonalized once, by one rank. Its orthogonalized updates are scaled by `0.2 * sqrt(max(rows, cols))` to AdamW's update RMS (Moonlight's calibration, used by DMuon / WALL-OSS), so Muon runs with the learning rate and weight decay tuned for AdamW. Muon does not need fp32 parameters: as in DMuon (WALL-OSS), a parameter kept in bf16 gets an fp32 master copy in the optimizer, which takes the momentum, weight decay and update and is written back to the bf16 weight. So `train.strategy=ddp train.precision=bf16` trains Muon with bf16 weights (gradients are averaged in fp32, the EMA is kept in fp32); optimizers without master copies are refused there, and FSDP keeps fp32 master shards for every optimizer. The training log reports `step_ms`, `data_wait_ms`, and `samples/s`. The default `agent.lr_schedule=main` keeps the original epoch schedule (IL: 3 warmup epochs over a 200-epoch cosine, minimum 1e-6; RL: 10 epochs without warmup, minimum 0). `agent.lr_schedule=step` explicitly schedules over the configured number of optimizer steps.
+
+### Mixed VQA and planning training
+
+For VQA with planning IL, use `scripts/train/run_recogdrive_vqa_planning_il.sh`; for VQA mixed with NAVSIM PDM-GRPO planning, continue from a stage-2 checkpoint with `scripts/train/run_recogdrive_vqa_planning_rl.sh`:
+
+```bash
+CHECKPOINT=/path/to/stage2.ckpt \
+METRIC_CACHE_PATH=/path/to/navtrain_metric_cache \
+CACHE_PATH=/path/to/navsim_image_path_cache \
+VLM_PATH=/path/to/matching_vlm \
+VQA_TRAIN_JSONL=/path/to/vqa/train.jsonl \
+VQA_VAL_JSONL=/path/to/vqa/val.jsonl \
+GPUS=4 bash scripts/train/run_recogdrive_vqa_planning_rl.sh
+```
+
+This alternates task batches through one trainable VLM. The PDM metric cache must match the NAVSIM planning training split. Keep `MODEL_FAMILY`, VLM weights, sampler, prediction horizon and LoRA settings aligned with the checkpoint; set `PLANNING_WEIGHT` and `VQA_WEIGHT` to change the task ratio. For the accepted scope and evidence, see [Repo Completion](Repo_Completion.md).
 
 ### Adapters, data sources, benchmarks, monitoring and inference
 
@@ -115,7 +129,7 @@ PhysicalAI-AV (`nvidia/PhysicalAI-Autonomous-Vehicles`) is gated by the NVIDIA A
 
 Training-split augmentation is off by default: `augment.history_dropout` and `augment.ego_status_dropout` zero the ego history / velocity and acceleration with the given probability (before the prompt is built), and `augment.color_jitter.p` (with `brightness`, `contrast`, `saturation`, `hue`), `augment.grayscale_p` and `augment.blur_p` are photometric image augmentations; geometric ones would move the scene against the labels.
 
-**Horizon and camera views.** `agent.trajectory_sampling.time_horizon` sets the prediction horizon (4 s = 8 poses by default, 5 s for the WOD-E2E metrics) and every data source cuts its targets to it. For 5 s widen the planner's output range, which by default stops at 65 m forward: `agent.action_norm_min=[-2.0,-40.0,-3.2] agent.action_norm_max=[160.0,40.0,3.2]`. `agent.cam_type=multi` feeds every surround view the source has (`agent.cameras` selects them), the front view rescaled to a 960-pixel short side and the others to 480; the padded prompt length `agent.vlm_max_length` defaults to 8704 for multi-view (WOD-E2E's 8 views take about 8240 tokens, nuScenes' 6 about 6450) and stays 2800 for the single-view recipe. NAVSIM multi-view reads scenes, or a cache rebuilt with `agent.cam_type=multi`; WOD-E2E needs a cache converted with `--views all`.
+**Horizon and camera views.** `agent.trajectory_sampling.time_horizon` sets the prediction horizon (4 s = 8 poses by default, 5 s for the WOD-E2E metrics) and every data source cuts its targets to it. For 5 s waypoint training, derive `agent.action_norm_min` / `agent.action_norm_max` from the training split and pass the same bounds to stage 2 and stage 3; the planner's default forward range is 65 m, so check it against the actual target distribution. `agent.cam_type=multi` feeds every surround view the source has (`agent.cameras` selects them), the front view rescaled to a 960-pixel short side and the others to 480; the padded prompt length `agent.vlm_max_length` defaults to 8704 for multi-view (WOD-E2E's 8 views take about 8240 tokens, nuScenes' 6 about 6450) and stays 2800 for the single-view recipe. NAVSIM multi-view reads scenes, or a cache rebuilt with `agent.cam_type=multi`; WOD-E2E needs a cache converted with `--views all`.
 
 **Benchmarks.** `evaluator.name` takes one benchmark or a list, `evaluator.<name>.*` overrides the shared keys for one of them, and results go to `eval/<benchmark>/<tag>/` and into the metrics as `eval/<benchmark>/<metric>`.
 
@@ -137,7 +151,7 @@ S="'synthetic_scenes_path=/data/navhard_two_stage/synthetic_scene_pickles','synt
 
 **Monitoring.** Every run writes `metrics.csv` (step, epoch, key, value: training loss, gradient norm, learning rate, step time, data wait, throughput, validation loss, benchmark metrics) and redraws `loss_curve.png` after each epoch. `monitor.wandb=online` or `offline` also logs to Weights & Biases (`pip install wandb`; a resumed run continues the same W&B run); without the package the run goes on with the CSV.
 
-**Inference.** `scripts/infer/run_recogdrive_infer.sh` runs a checkpoint on any registered data source and split and writes `predictions.json` (token to ego-frame poses) plus `vis/<token>.png` (front camera and bird's-eye view of history, ground truth and prediction) for the first `VISUALIZE` samples; `SPLIT=test` with the NAVSIM loader runs every scene of `train_test_split`:
+**Inference.** `scripts/infer/run_recogdrive_infer.sh` runs a checkpoint on any registered planning data source and split and writes `predictions.json` (token to ego-frame poses) plus `vis/<token>.png` (front camera and bird's-eye view of history, ground truth and prediction) for the first `VISUALIZE` samples; `SPLIT=test` with the NAVSIM loader runs every scene of `train_test_split`:
 
 ```bash
 CHECKPOINT=/path/to/epoch_0010.ckpt VLM_PATH=/path/to/vlm GPUS=2 \
@@ -174,31 +188,28 @@ Run WaymoE2E stage 2 imitation learning:
 ```bash
 WAYMOE2E_CACHE_PATH=/path/to/waymoe2e_recogdrive_cache \
 VLM_PATH=/path/to/internvl3_or_qwenvl3 \
-sh scripts/train/run_recogdrive_waymoe2e_stage2_il.sh
+bash scripts/train/run_recogdrive_waymoe2e_stage2_il.sh agent.trajectory_sampling.time_horizon=5
 ```
 
-Run WaymoE2E stage 3 RL from the stage 2 checkpoint:
+WaymoE2E supports stage 2 imitation learning and explicit stage 3 GRPO rewards. The stage 3 launcher selects `waymo_ade` by default: negative mean XY waypoint error over the logged 5-second training future. This is a research reward, not official RFS. `WAYMO_GRPO_REWARD=waymo_rfs` explicitly selects per-frame RFS and requires separately supplied training rater labels; the public validation labels are not used for training. Both modes require the same 5-second stage-2 model and training-cache root/split. Open-loop evaluation reports frame-level RFS/ADE; official scenario-cluster `average_score` requires official category metadata or the evaluation server. See [Waymo RL](Waymo_RL.md).
 
 ```bash
+STAGE2_CHECKPOINT=/path/to/waymo_stage2_5s.ckpt \
 WAYMOE2E_CACHE_PATH=/path/to/waymoe2e_recogdrive_cache \
-CHECKPOINT=/path/to/waymoe2e_stage2_il.ckpt \
-METRIC_CACHE_PATH=/path/to/waymoe2e_metric_cache \
-VLM_PATH=/path/to/internvl3_or_qwenvl3 \
-sh scripts/train/run_recogdrive_waymoe2e_stage3_rl.sh
+WAYMO_GRPO_REWARD=waymo_ade \
+bash scripts/train/run_recogdrive_waymoe2e_stage3_rl.sh
 ```
-
-The stage 3 script reuses the existing ReCogDrive RL/PDM reward path. Therefore `METRIC_CACHE_PATH` must contain metric cache metadata and token names compatible with the WaymoE2E cache tokens. You can override `MODEL_FAMILY=qwenvl3`, `TRAINING_TARGET=delta`, `WAYMOE2E_TRAIN_SPLIT`, and `WAYMOE2E_VAL_SPLIT` when needed.
 
 You can also enable **EMA (Exponential Moving Average)** during training for faster convergence. Note that this may lead to very slight performance degradation. Validation then runs on the averaged weights, every checkpoint gets an `*-EMA.ckpt` twin, evaluators score the EMA twin, and the average is part of the resume state. `train.ema_decay` is the per-step decay at global batch `train.ema_reference_batch` (default 128); other batch sizes use `decay ** (batch / reference)`, which keeps the averaging horizon the same number of samples.
 
 ```bash
-sh scripts/train/run_recogdrive_internvl3_waypoint_il.sh train.ema_decay=0.999
+bash scripts/train/run_recogdrive_internvl3_waypoint_il.sh train.ema_decay=0.999
 ```
 
 **LoRA on the VLM.** `agent.lora_rank` (with `agent.lora_alpha`, `agent.lora_dropout`, `agent.lora_targets`) adds peft LoRA adapters to the VLM's language model, by default its attention and MLP projections, and trains them together with the planner while the VLM's own weights stay frozen. `agent.train_backbone=true` fine-tunes the whole VLM instead; the two are exclusive. The VLM now back-propagates, so checkpoint its decoder layers' activations (`Qwen2DecoderLayer` for InternVL3). Each checkpointed layer runs its forward again in backward; `train.activation_checkpointing_layers=N` recomputes only the first N of the matched layers and keeps the others' activations. With 4 samples of 2800 tokens per RTX 3090, every InternVL3-2B decoder layer left out saves about 14 ms per step and costs about 1 GiB: all 28 layers take 2468 ms and 7.6 GiB, 16 layers 2297 ms and 19.7 GiB. Set the smallest count that still leaves memory to spare; larger GPUs can drop checkpointing altogether. The adapters are saved in the planner checkpoint (no `_vlm` export) and re-injected when an agent with the same `lora_*` settings loads it, so NAVSIM evaluation and inference need nothing else; the VQA benchmarks load a HuggingFace VLM and refuse LoRA runs until the adapters are merged.
 
 ```bash
-sh scripts/train/run_recogdrive_internvl3_waypoint_il.sh agent.lora_rank=16 'train.activation_checkpointing=[Qwen2DecoderLayer]'
+CACHE_HIDDEN_STATE=False bash scripts/train/run_recogdrive_internvl3_waypoint_il.sh agent.lora_rank=16 'train.activation_checkpointing=[Qwen2DecoderLayer]'
 ```
 
 ### Step 3: Configure and Run Evaluation
@@ -206,7 +217,7 @@ sh scripts/train/run_recogdrive_internvl3_waypoint_il.sh agent.lora_rank=16 'tra
 After training is complete, you can configure the evaluation script and launch evaluation:
 
 ```bash
-sh evaluation/run_recogdrive_agent_pdm_score_evaluation_2b.sh
+bash scripts/evaluation/run_recogdrive_agent_pdm_score_evaluation_2b.sh
 ```
 
 This will evaluate your trained agent using **PDM scores** on the navtest.
@@ -226,10 +237,10 @@ First, you need to cache metrics for the training and test sets, which will be u
 
 ```bash
 # cache metrics for navtrain
-sh cache_dataset/run_metric_caching_train.sh
+bash scripts/cache_dataset/run_metric_caching_train.sh
 
 # cache metrics for navtest
-sh cache_dataset/run_metric_caching.sh
+bash scripts/cache_dataset/run_metric_caching.sh
 ```
 
 
@@ -239,16 +250,16 @@ After caching metrics, configure the RL training script and launch training:
 
 ```bash
 CHECKPOINT=/path/to/il.ckpt METRIC_CACHE_PATH=/path/to/navtrain_metric_cache \
-  sh scripts/train/run_recogdrive_internvl3_waypoint_rl.sh
+  bash scripts/train/run_recogdrive_internvl3_waypoint_rl.sh
 ```
 
 For flow-matching RL, use the flow sampler:
 
 ```bash
-sh scripts/train/run_recogdrive_internvl3_flow_waypoint_rl.sh
+bash scripts/train/run_recogdrive_internvl3_flow_waypoint_rl.sh
 ```
 
-This uses a Flow-GRPO-style SDE rollout to obtain per-step log-probabilities, then follows the original ReCogDrive RL objective with `-log_prob * advantage` instead of a clipped policy ratio. The main tunable parameters are `agent.flow_noise_level` and `agent.flow_sde_type` (`sde` or `cps`).
+This uses a Flow-GRPO-style SDE rollout to obtain per-step log-probabilities. `agent.grpo_objective=main` uses the original direct log-probability objective; `agent.grpo_objective=ppo` explicitly enables a clipped ratio. The historical main branch did not provide a working Flow RL path, so this sampler is an extension. The main tunable parameters are `agent.flow_noise_level` and `agent.flow_sde_type` (`sde` or `cps`).
 
 Before running, modify the script parameters as needed  according to your hardware and training requirements. This command will start RL training immediately after configuration.
 
@@ -260,7 +271,10 @@ The PDM reward of the sampled trajectories is computed on the CPU. `agent.grpo_r
 After training is complete, you can configure the evaluation script and launch evaluation:
 
 ```bash
-sh evaluation/run_recogdrive_agent_pdm_score_evaluation_2b.sh
+bash scripts/evaluation/run_recogdrive_agent_pdm_score_evaluation_2b.sh
 ```
 This will evaluate your trained agent using **PDM scores** on the navtest.
 
+
+
+See [Refactor iteration and VQA/planning training](Refactor_Iteration.md) for the shared implementation, main-compatible defaults, alternating VQA/planning batches, checkpoint guarantees and verification commands.

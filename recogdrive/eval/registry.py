@@ -8,7 +8,9 @@ finish(final_ckpt) (main rank, (tag, metrics) pairs), and release()."""
 
 import csv
 import logging
+import math
 import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -84,11 +86,36 @@ class SubprocessEvaluator:
 
     def launch(self, cmd: List[str], out_dir: Path, tag: str, env: Dict[str, str]) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
-        log = open(out_dir / "eval.log", "w")
         logger.info("eval %s started: %s", tag, " ".join(cmd))
-        proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
-        log.close()
+        with open(out_dir / "eval.log", "w") as log:
+            proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                    start_new_session=os.name == "posix")
         self.jobs.append((tag, proc, out_dir))
+
+    def cancel(self) -> None:
+        """Stop only this evaluator's subprocess groups; runners clean up their owned services on TERM."""
+        for _, proc, _ in self.jobs:
+            if proc.returncode is None:
+                if os.name == "posix":
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                if os.name == "posix":
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.kill()
+                proc.wait()
+        self.jobs.clear()
+        self.deferred.clear()
 
     def submit(self, ckpt: Path, tag: str) -> None:
         out_dir = self.root / tag
@@ -102,12 +129,14 @@ class SubprocessEvaluator:
         """Called on every rank at an evaluation epoch, with the model holding the weights `ckpt` holds."""
         if not trainer.ctx.is_main:
             return
+        # Later epochs may prune the original while the child loads/exports its VLM.
+        ckpt = snapshot(Path(ckpt), self.root / tag)
         if OmegaConf.select(self.section, "gpus") is not None:
             self.submit(ckpt, tag)
             return
         logger.info("eval %s waits for the end of training; set evaluator.gpus to GPUs training does not use "
                     "to run it now", tag)
-        self.deferred.append((snapshot(Path(ckpt), self.root / tag), tag))
+        self.deferred.append((ckpt, tag))
 
     def collect(self, block: bool) -> List[Tuple[str, Dict]]:
         done, running = [], []
@@ -118,14 +147,23 @@ class SubprocessEvaluator:
                 running.append((tag, proc, out_dir))
                 continue
             if proc.returncode != 0:
-                done.append((tag, {"error": f"exit {proc.returncode}, see {out_dir / 'eval.log'}"}))
+                done.append((tag, self.failure_result(out_dir, proc.returncode)))
                 continue
             try:
-                done.append((tag, self.read_result(out_dir)))
+                result = self.read_result(out_dir)
+                if not isinstance(result, dict) or not result:
+                    raise ValueError("evaluator returned no metrics")
+                numeric = [value for value in result.values() if isinstance(value, (int, float)) and not isinstance(value, bool)]
+                if not numeric or not all(math.isfinite(value) for value in numeric):
+                    raise ValueError("evaluator must return finite numeric metrics")
+                done.append((tag, result))
             except (OSError, ValueError, KeyError) as exc:
                 done.append((tag, {"error": f"{exc}, see {out_dir}"}))
         self.jobs = running
         return done
+
+    def failure_result(self, out_dir: Path, returncode: int) -> Dict:
+        return {"error": f"exit {returncode}, see {out_dir / 'eval.log'}"}
 
     def poll(self) -> List[Tuple[str, Dict]]:
         return self.collect(block=False)

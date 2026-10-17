@@ -209,6 +209,36 @@ class RecogDriveBackbone(nn.Module):
         config = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, target_modules=list(targets or LORA_TARGETS))
         inject_adapter_in_model(config, self.model)
 
+    @torch.no_grad()
+    def merge_lora_for_export(self):
+        """Merge injected PEFT tuner layers and restore the base HF module layout for export."""
+        try:
+            from peft.tuners.tuners_utils import BaseTunerLayer
+        except ImportError as exc:
+            raise ImportError("PEFT is required to merge LoRA weights for VQA export") from exc
+
+        merged = 0
+
+        def merge_children(parent):
+            nonlocal merged
+            for name, child in list(parent.named_children()):
+                merge_children(child)
+                if isinstance(child, BaseTunerLayer):
+                    if not callable(getattr(child, "merge", None)) or not callable(getattr(child, "get_base_layer", None)):
+                        raise TypeError(f"PEFT layer {type(child).__name__} cannot be merged and unwrapped")
+                    if not getattr(child, "active_adapters", None):
+                        raise ValueError(f"PEFT layer {type(child).__name__} has no active adapter to merge")
+                    child.merge(safe_merge=True)
+                    if not getattr(child, "merged_adapters", None):
+                        raise RuntimeError(f"PEFT layer {type(child).__name__} did not merge an adapter")
+                    setattr(parent, name, child.get_base_layer())
+                    merged += 1
+
+        merge_children(self.model)
+        if not merged:
+            raise ValueError("No injected PEFT tuner layers found to merge")
+        return self.model
+
     def configure_internvl(self):
         """Applies specific configurations required for the InternVL model."""
         self.model.system_message = system_message
@@ -312,4 +342,40 @@ class RecogDriveBackbone(nn.Module):
         # The generation model's own hidden_states[-1]: for Qwen3-VL it is the last decoder layer before the final
         # norm, unlike self.model.model's. logits_to_keep=1 leaves the LM head one position instead of every token.
         return self.model(**model_inputs, output_hidden_states=True, use_cache=False, logits_to_keep=1).hidden_states[-1]
+
+    def forward_vqa(self, features: dict) -> torch.Tensor:
+        """Answer-only causal LM loss over the same VLM used by planning."""
+        labels = features["labels"]
+        answer_lengths = features["answer_lengths"]
+        answer_tokens = max(int(length) for length in answer_lengths)
+        if answer_tokens < 1:
+            raise ValueError("VQA batch has no supervised answer tokens")
+        targets = labels[:, -answer_tokens:]
+
+        if self.model_type == "qwen":
+            inputs = {key: features[key] for key in ("input_ids", "attention_mask", "pixel_values", "image_grid_thw")
+                      if key in features}
+            # Answers are right-aligned, so keep only the answer predictors and one preceding position.
+            logits = self.model(**inputs, use_cache=False, logits_to_keep=answer_tokens + 1).logits[:, :-1]
+            return F.cross_entropy(logits.float().reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index=-100)
+
+        input_ids, attention_mask = features["input_ids"], features["attention_mask"]
+        language_model = self.model.language_model
+        embeds = language_model.get_input_embeddings()(input_ids)
+        pixel_values = features["pixel_values"]
+        if pixel_values is not None and "num_patches" in features:
+            vit_embeds = self.model.extract_feature(pixel_values.to(next(self.model.parameters()).dtype))
+            selected = (input_ids == self.img_context_token_id).unsqueeze(-1)
+            embeds = embeds.masked_scatter(selected, vit_embeds.reshape(-1, embeds.shape[-1]).to(embeds.dtype))
+        position_ids = attention_mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(attention_mask == 0, 1)
+        hidden = language_model.get_decoder()(
+            inputs_embeds=embeds, attention_mask=attention_mask, position_ids=position_ids, use_cache=False,
+        ).last_hidden_state
+        head = language_model.get_output_embeddings()
+        if head is None:
+            raise RuntimeError("InternVL language model has no output embedding / LM head")
+        predictors = hidden[:, -answer_tokens - 1:-1]
+        logits = head(predictors)
+        return F.cross_entropy(logits.float().reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index=-100)
     

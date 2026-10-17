@@ -22,7 +22,18 @@ TRAINING_TARGET="${TRAINING_TARGET:-waypoint}"  # waypoint | delta
 TRAIN_STAGE="${TRAIN_STAGE:-il}"                # il | rl
 SAMPLING_METHOD="${SAMPLING_METHOD:-ddim}"      # ddim | ddpm | flow
 OPTIMIZER_TYPE="${OPTIMIZER_TYPE:-adamw}"       # adamw | muon
+GRPO_OBJECTIVE="${GRPO_OBJECTIVE:-main}"        # main | ppo; ppo is an explicit algorithm change
+LR_SCHEDULE="${LR_SCHEDULE:-main}"              # main epoch recipe | step schedule
 WAYMOE2E="${WAYMOE2E:-False}"
+if [[ "${WAYMOE2E,,}" == "true" ]]; then
+  CACHE_HIDDEN_STATE="${CACHE_HIDDEN_STATE:-False}"
+else
+  CACHE_HIDDEN_STATE="${CACHE_HIDDEN_STATE:-True}"
+fi
+case "${CACHE_HIDDEN_STATE,,}" in
+  true|false) ;;
+  *) echo "CACHE_HIDDEN_STATE must be True or False" >&2; exit 1 ;;
+esac
 WAYMOE2E_TRAIN_SPLIT="${WAYMOE2E_TRAIN_SPLIT:-training}"
 WAYMOE2E_VAL_SPLIT="${WAYMOE2E_VAL_SPLIT:-val}"
 
@@ -70,7 +81,7 @@ case "${TRAIN_STAGE}" in
       _RL_BATCH_DEFAULT=1
       BATCH_SIZE=16
     fi
-    GRPO_NUM_ITERATIONS="${GRPO_NUM_ITERATIONS:-4}"
+    GRPO_NUM_ITERATIONS="${GRPO_NUM_ITERATIONS:-1}"
     CHECKPOINT="${CHECKPOINT:-/path/to/${MODEL_FAMILY}_${TRAINING_TARGET}_il.ckpt}"
     METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-/path/to/metric_cache_train}"
     # DDP: FSDP2's per-block hooks cost the small planner's RL passes more than sharding saves (2.19 s vs 2.69 s
@@ -114,11 +125,15 @@ LR="${LR:-1e-4}"
 GRPO_NUM_ITERATIONS="${GRPO_NUM_ITERATIONS:-1}"
 MAX_STEPS="${MAX_STEPS:-0}"
 SKIP_VALIDATION="${SKIP_VALIDATION:-False}"
-CACHE_ROOT="${CACHE_ROOT:-/path/to/recogdrive_agent_cache}"
+CACHE_ROOT="${CACHE_ROOT:-${NAVSIM_EXP_ROOT}/recogdrive_agent_cache}"
 if [[ "${WAYMOE2E,,}" == "true" ]]; then
   CACHE_PATH="${CACHE_PATH:-${WAYMOE2E_CACHE_PATH:-/path/to/waymoe2e_recogdrive_cache}}"
 else
-  CACHE_PATH="${CACHE_PATH:-${CACHE_ROOT}_${MODEL_FAMILY}_no_hidden_state}"
+  if [[ "${CACHE_HIDDEN_STATE,,}" == "true" ]]; then
+    CACHE_PATH="${CACHE_PATH:-${CACHE_ROOT}_${MODEL_FAMILY}}"
+  else
+    CACHE_PATH="${CACHE_PATH:-${CACHE_ROOT}_${MODEL_FAMILY}_no_hidden_state}"
+  fi
 fi
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-training_recogdrive_${MODEL_FAMILY}_${SAMPLING_METHOD}_${TRAINING_TARGET}_${OPTIMIZER_TYPE}_${TRAIN_STAGE}_navsim${NAVSIM_TREE}}"
 LOG_FILE="${LOG_FILE:-train_recogdrive_${MODEL_FAMILY}_${SAMPLING_METHOD}_${TRAINING_TARGET}_${OPTIMIZER_TYPE}_${TRAIN_STAGE}_navsim${NAVSIM_TREE}.txt}"
@@ -132,6 +147,7 @@ echo "NAVSIM_TREE=${NAVSIM_TREE}"
 echo "VLM_TYPE=${VLM_TYPE}"
 echo "VLM_PATH=${VLM_PATH}"
 echo "CACHE_PATH=${CACHE_PATH}"
+echo "CACHE_HIDDEN_STATE=${CACHE_HIDDEN_STATE}"
 echo "WAYMOE2E=${WAYMOE2E}"
 echo "NAVSIM_DEVKIT_ROOT=${NAVSIM_DEVKIT_ROOT}"
 if [[ "${_RL_BATCH_DEFAULT:-}" == "1" ]] && (( GPUS < 8 )); then
@@ -162,7 +178,7 @@ torchrun \
   agent.grpo="${GRPO}" \
   agent.vlm_path="${VLM_PATH}" \
   agent.cam_type=single \
-  agent.cache_hidden_state=False \
+  agent.cache_hidden_state="${CACHE_HIDDEN_STATE}" \
   agent.vlm_type="${VLM_TYPE}" \
   agent.dit_type="${DIT_TYPE}" \
   agent.vlm_size="${VLM_SIZE}" \
@@ -173,6 +189,8 @@ torchrun \
   agent.flow_sde_type="${FLOW_SDE_TYPE}" \
   agent.optimizer_type="${OPTIMIZER_TYPE}" \
   agent.grpo_num_iterations="${GRPO_NUM_ITERATIONS}" \
+  agent.grpo_objective="${GRPO_OBJECTIVE}" \
+  agent.lr_schedule="${LR_SCHEDULE}" \
   agent.train_backbone=False \
   "${CHECKPOINT_ARGS[@]}" \
   trainer.params.max_epochs="${MAX_EPOCHS}" \

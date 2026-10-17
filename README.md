@@ -65,6 +65,13 @@ Recent studies have explored leveraging the world knowledge and cognitive capabi
 - [Download NAVSIM datasets following official instruction](https://github.com/autonomousvision/navsim/blob/main/docs/install.md)
 - [Preparation of ReCogDrive environment](docs/Installation.md)
 - [ReCogDrive Training and Evaluation](docs/Train_Eval.md)
+- [Refactor recipes, supported paths and validation status](docs/Refactor_Iteration.md)
+- [main compatibility comparison and evidence scope](docs/Main_Compatibility.md)
+- [2026-10-04 repo engineering closeout](docs/Repo_Completion.md)
+- [GPU 验证结果与复跑命令](docs/GPU_Validation.md)
+- [Waymo 强化训练配方与标签要求](docs/Waymo_RL.md)
+- [闭环模拟器评估编排](docs/Closedloop_Evaluation.md)
+- [原始七项需求、专项验收与源码证据终版](docs/Requirements_Acceptance_Final.md)
 
 ## Checkpoint
 

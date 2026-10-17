@@ -7,6 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 @dataclass
 class TrainArgs:
     strategy: str = "fsdp"                      # fsdp | ddp
+    find_unused_parameters: bool = False         # required by DDP paths with task-specific unused parameters
     precision: str = "bf16"                     # compute dtype of trainable parameters: bf16 | fp32 (ddp bf16 needs Muon)
     reshard_after_forward: Union[bool, int] = False
     hsdp_shard_size: Optional[int] = None       # shard within groups of this size, replicate across them
@@ -26,7 +27,7 @@ class TrainArgs:
     ema_decay: float = 0.0                      # 0: off; e.g. 0.999 validates and exports the averaged weights too
     ema_reference_batch: int = 128              # global batch ema_decay is tuned for; other batches get decay ** (batch / this)
     max_epochs: int = 10
-    max_steps: int = 0
+    max_steps: int = 0                          # 0: no limit; GRPO stops at a complete rollout/accumulation boundary
     val_every_n_epochs: int = 1
     skip_validation: bool = False
     seed: Optional[int] = None
@@ -63,6 +64,10 @@ class TrainArgs:
             raise ValueError(f"world size {world_size} is not divisible by train.hsdp_shard_size {self.hsdp_shard_size}")
         if self.grad_accum < 1:
             raise ValueError("gradient accumulation must be >= 1")
+        if self.max_steps < 0:
+            raise ValueError("train.max_steps must be >= 0")
+        if self.save_every_n_steps < 0:
+            raise ValueError("train.save_every_n_steps must be >= 0")
         if self.activation_checkpointing_layers is not None and self.activation_checkpointing_layers < 1:
             raise ValueError("train.activation_checkpointing_layers must be a positive layer count or null (all)")
         if not 0.0 <= self.ema_decay < 1.0:
