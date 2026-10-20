@@ -66,6 +66,21 @@ Recent studies have explored leveraging the world knowledge and cognitive capabi
 - [Preparation of ReCogDrive environment](docs/Installation.md)
 - [ReCogDrive Training and Evaluation](docs/Train_Eval.md)
 
+### How to run the same on Intel's XPU
+
+Use Python 3.10 or newer (the XPU wheels need it) and install the XPU build of PyTorch instead of the CUDA wheels. Two pins of `requirements.txt` do not install next to it (`setuptools==65.5.1` and `guppy3==3.1.2`), so drop them:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/xpu
+grep -v -E "^(setuptools|guppy3)==" requirements.txt > requirements-xpu.txt
+pip install -r requirements-xpu.txt && pip install -e . --no-deps
+pip install transformers==4.57.6 diffusers==0.35.2 einops sentencepiece decord pytest
+```
+
+Skip flash-attn: it is CUDA only, and the InternVL code falls back to eager attention without it. The agent picks XPU, then CUDA, then CPU on its own, and `ReCogDriveAgent(..., device="xpu:0")` overrides that. To run the planner on one card, select it with `ZE_AFFINITY_MASK=0` instead of `CUDA_VISIBLE_DEVICES=0` and call the agent as in the evaluation setup (`agent.cache_hidden_state=False`, `agent.vlm_path` and `agent.checkpoint_path` set): `agent.initialize()`, then `agent.compute_trajectory(agent_input)`.
+
+Only this inference path (VLM encoding, diffusion planner, `compute_trajectory`) is covered. The distributed driver `run_pdm_score_recogdrive.py` (NCCL, `torch.cuda.set_device`) and the `qwen_agent.py` baseline stay CUDA only.
+
 ## Checkpoint
 
 > Results on NAVSIM

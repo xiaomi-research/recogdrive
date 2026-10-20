@@ -10,6 +10,7 @@ from navsim.planning.training.abstract_feature_target_builder import AbstractFea
 from navsim.common.dataclasses import Scene, Trajectory
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from .recogdrive_backbone import RecogDriveBackbone
+from .utils.device import resolve_device
 from .utils.internvl_preprocess import load_image
 
 def format_number(n, decimal_places=2):
@@ -21,7 +22,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
                  cache_hidden_state: bool = True,
                  model_type: Optional[str] = None,
                  checkpoint_path: Optional[str] = None,
-                 device: str = "cuda",
+                 device: Optional[str] = None,
                  cache_mode: bool = False, ):
         """
         Initializes the feature builder.
@@ -47,7 +48,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             self.backbone = RecogDriveBackbone(
                 model_type=model_type,
                 checkpoint_path=checkpoint_path,
-                device=device
+                device=str(resolve_device(device))
             )
 
     def get_unique_name(self) -> str:
@@ -101,7 +102,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             output_requirements = "\nOutput requirements:\n- Predict 8 future trajectory points\n- Each point format: (x:float, y:float, heading:float)\n- Use [PT, ...] to encapsulate the trajectory\n- Maintain numerical precision to 2 decimal places"
             questions = [f"{prompt}{output_requirements}"]
 
-            outputs = self.backbone(pixel_values_cat.cuda(), questions, num_patches_list=num_patches_list)
+            outputs = self.backbone(pixel_values_cat.to(self.backbone.device), questions, num_patches_list=num_patches_list)
             last_hidden_state = outputs.hidden_states[-1]
 
             return {

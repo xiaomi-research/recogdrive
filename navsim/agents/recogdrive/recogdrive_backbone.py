@@ -5,6 +5,7 @@ from transformers import AutoModel, AutoTokenizer
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .utils.conversation import get_conv_template
+from .utils.device import device_type, resolve_device
 
 IMG_CONTEXT_TOKEN = '<IMG_CONTEXT>'
 IMG_START_TOKEN = '<img>'
@@ -30,21 +31,22 @@ class RecogDriveBackbone(nn.Module):
     def __init__(self,
                  model_type: str,
                  checkpoint_path: str,
-                 device: str = "cuda"):
+                 device: Optional[str] = None):
         """
         Initializes and loads the specified model and its preprocessor/tokenizer.
 
         Args:
             model_type (str): The type of model to load. Supported: 'internvl', 'qwen'.
             checkpoint_path (str): The path to the model checkpoint.
-            device (str): The device to load the model onto ('cuda', 'cpu').
+            device (str): The device to load the model onto (for example 'cuda:0', 'xpu:0' or 'cpu'). Defaults to the
+                detected backend: XPU, then CUDA, then CPU.
         """
         super().__init__()
 
         self.model = None
         self.tokenizer = None  
         self.model_type = model_type.lower()
-        self.device = device
+        self.device = str(resolve_device(device))
 
         print(f"Initializing backbone of type: '{self.model_type}' from path: '{checkpoint_path}'")
 
@@ -55,7 +57,8 @@ class RecogDriveBackbone(nn.Module):
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
-                use_flash_attn=True,
+                # flash-attn is CUDA only: the InternVL code falls back to eager attention without it
+                use_flash_attn=device_type(self.device) == "cuda",
                 device_map=self.device
             ).eval()
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -115,7 +118,7 @@ class RecogDriveBackbone(nn.Module):
             queries.append(query)
         self.tokenizer.padding_side = 'left'
         model_inputs = self.tokenizer(queries, return_tensors='pt', padding='max_length', max_length=2800)
-        device = torch.device('cuda')
+        device = torch.device(self.device)
         input_ids = model_inputs['input_ids'].to(device)
         attention_mask = model_inputs['attention_mask'].to(device)
 

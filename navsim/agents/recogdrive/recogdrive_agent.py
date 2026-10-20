@@ -13,6 +13,7 @@ from navsim.common.dataclasses import AgentInput, SensorConfig, Trajectory
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
+from .utils.device import resolve_device
 from .utils.internvl_preprocess import load_image
 from .utils.lr_scheduler import WarmupCosLR
 from .utils.utils import format_number, build_from_configs
@@ -42,6 +43,7 @@ class ReCogDriveAgent(AbstractAgent):
         reference_policy_checkpoint: Optional[str] = '', 
         vlm_size: Optional[str] = 'small', 
         train_backbone: bool = False,
+        device: Optional[str] = None,
     ):
         super().__init__()
         self._trajectory_sampling = trajectory_sampling
@@ -60,7 +62,7 @@ class ReCogDriveAgent(AbstractAgent):
         self.train_backbone = train_backbone
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
-        device = f"cuda:{local_rank}"
+        device = str(resolve_device(device, local_rank))
         self.device = device
         if not self.cache_hidden_state and not self.cache_mode:
             print("Agent running in 'no-cache' mode. Initializing internal backbone.")
@@ -90,7 +92,7 @@ class ReCogDriveAgent(AbstractAgent):
             cfg.grpo_cfg.metric_cache_path = self.metric_cache_path
             cfg.grpo_cfg.reference_policy_checkpoint = self.reference_policy_checkpoint
             
-        self.action_head = ReCogDriveDiffusionPlanner(cfg).cuda()
+        self.action_head = ReCogDriveDiffusionPlanner(cfg).to(self.device)
         self.num_inference_samples = 1
         self.inference_selection_mode = "median"
 
@@ -99,7 +101,8 @@ class ReCogDriveAgent(AbstractAgent):
 
     def initialize(self) -> None:
         if self.checkpoint_path:
-            ckpt = torch.load(self.checkpoint_path, map_location="cpu")["state_dict"]
+            # Lightning checkpoints carry config objects, which torch >= 2.6 refuses to unpickle by default
+            ckpt = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)["state_dict"]
             model_dict = self.state_dict()
             filtered_ckpt = {}
             for k, v in ckpt.items():
@@ -126,12 +129,12 @@ class ReCogDriveAgent(AbstractAgent):
     def forward(self, features: Dict[str, torch.Tensor], targets=None, tokens_list=None) -> Dict[str, torch.Tensor]:
         for key, tensor in features.items():
             if isinstance(tensor, torch.Tensor):
-                features[key] = tensor.cuda()
+                features[key] = tensor.to(self.device)
 
         model_dtype = next(self.action_head.parameters()).dtype
 
-        history_trajectory = features["history_trajectory"].cuda()
-        high_command_one_hot = features["high_command_one_hot"].cuda()
+        history_trajectory = features["history_trajectory"].to(self.device)
+        high_command_one_hot = features["high_command_one_hot"].to(self.device)
         
         if history_trajectory.ndim == 2:
             history_trajectory = history_trajectory.unsqueeze(0)
@@ -139,7 +142,7 @@ class ReCogDriveAgent(AbstractAgent):
             high_command_one_hot = high_command_one_hot.unsqueeze(0)
 
         if self.cache_hidden_state:
-            last_hidden_state = features["last_hidden_state"].cuda()
+            last_hidden_state = features["last_hidden_state"].to(self.device)
         else:
             if self.backbone is None:
                 raise RuntimeError("Agent is in 'no-cache' mode, but backbone is not initialized.")
@@ -151,7 +154,7 @@ class ReCogDriveAgent(AbstractAgent):
             pixel_values_list = [load_image(path) for path in image_paths]
             
             num_patches_list = [p.shape[0] for p in pixel_values_list]
-            pixel_values_cat = torch.cat(pixel_values_list, dim=0).cuda()
+            pixel_values_cat = torch.cat(pixel_values_list, dim=0).to(self.device)
             
 
             navigation_commands = ['turn left', 'go straight', 'turn right']
@@ -188,7 +191,7 @@ class ReCogDriveAgent(AbstractAgent):
             outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
             last_hidden_state = outputs.hidden_states[-1]
 
-        status_feature = features["status_feature"].cuda()
+        status_feature = features["status_feature"].to(self.device)
         if status_feature.ndim == 1:
             status_feature = status_feature.unsqueeze(0)
         if last_hidden_state.ndim == 2:
