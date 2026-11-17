@@ -35,8 +35,10 @@ def _token_ids(tokenizer, text):
     return tokenizer(text, add_special_tokens=True, padding=False, truncation=False)["input_ids"]
 
 
-def _prepare_internvl(tokenizer, image_paths, question, answer, max_length, num_image_token, short_sides):
-    image_tensors = [load_image(path, short_side=short_sides[0 if index == 0 else 1])
+def _prepare_internvl(tokenizer, image_paths, question, answer, max_length, num_image_token, short_sides, patch_counts):
+    image_tensors = [load_image(path, short_side=short_sides[0 if index == 0 else 1],
+                               **({"num_patches": patch_counts[0 if index == 0 else 1]}
+                                  if patch_counts[0 if index == 0 else 1] is not None else {}))
                      for index, path in enumerate(image_paths)]
     patch_counts = [int(image.shape[0]) for image in image_tensors]
     image_prefix = "".join(
@@ -81,13 +83,14 @@ def _prepare_qwen(processor, image_paths, question, answer, max_length):
     return features
 
 
-def prepare_vqa_features(features, tokenizer, model_type, max_length, num_image_token=256, short_sides=(None, None)):
+def prepare_vqa_features(features, tokenizer, model_type, max_length, num_image_token=256, short_sides=(None, None),
+                         patch_counts=(None, None)):
     """Turn one raw VQA record into CPU tensors; used through the agent's worker transform."""
     question, answer = features["question"], features["answer"]
     image_paths = features["image_paths"]
     if str(model_type).lower() == "internvl":
         processed = _prepare_internvl(tokenizer, image_paths, question, answer, max_length, num_image_token,
-                                      short_sides)
+                                      short_sides, patch_counts)
     elif str(model_type).lower() == "qwen":
         processed = _prepare_qwen(tokenizer, image_paths, question, answer, max_length)
     else:

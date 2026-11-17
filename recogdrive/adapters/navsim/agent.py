@@ -55,30 +55,36 @@ def prepare_vlm_inputs(
     cameras: Optional[List[str]] = None,
     short_sides: Tuple[Optional[int], Optional[int]] = (None, None),
     image_augment=None,
+    patch_counts: Tuple[Optional[int], Optional[int]] = (None, None),
 ) -> Dict[str, Any]:
     """Runs in dataloader workers: prompt and image paths as Python strings, so the model never reads
     them back from GPU tensors, plus the InternVL tiles when load_tiles. `cameras` selects the
     views of a multi-view prompt (front / other views rescaled to `short_sides`); None keeps the
     single front view at its native resolution."""
     views = camera_views(features)
+    if cameras and any(count is not None for count in patch_counts) and set(cameras).difference(view for view, _ in views):
+        raise ValueError("fixed multi-view patch budgets require all selected cameras; rebuild the multi-view cache")
     if not views:
         return features
     if cameras:
         available = dict(views)
         views = [(view, available[view]) for view in cameras if view in available]
         sizes = [short_sides[0] if view == "front" else short_sides[1] for view, _ in views]
+        counts = [patch_counts[0] if view == "front" else patch_counts[1] for view, _ in views]
         features["image_paths"] = [path for _, path in views]
     else:
         views = [next((view for view in views if view[0] == "front"), views[0])]
         sizes = [None]
+        counts = [patch_counts[0]]
         features["image_paths"] = views[0][1]
     features["vlm_question"] = ReCogDriveAgent.vlm_questions(
         features["history_trajectory"], features["high_command_one_hot"],
         num_poses=num_poses, views=[view for view, _ in views] if cameras else None,
     )[0]
     if load_tiles:
-        pixel_values_list = [load_image(path, short_side=size, augment=image_augment)
-                             for (_, path), size in zip(views, sizes)]
+        pixel_values_list = [load_image(path, short_side=size, augment=image_augment,
+                                       **({"num_patches": count} if count is not None else {}))
+                             for (_, path), size, count in zip(views, sizes, counts)]
         features["pixel_values"] = torch.cat(pixel_values_list, dim=0)
         features["num_patches"] = torch.tensor([pv.shape[0] for pv in pixel_values_list])
     return features
@@ -130,6 +136,8 @@ class ReCogDriveAgent(AbstractAgent):
         lora_alpha: float = 16.0,
         lora_dropout: float = 0.05,
         lora_targets: Optional[List[str]] = None,
+        front_num_patches: Optional[int] = None,
+        side_num_patches: Optional[int] = None,
         *,
         grpo_waymo_dev_rfs: bool = False,
     ):
@@ -148,6 +156,14 @@ class ReCogDriveAgent(AbstractAgent):
             raise ValueError(f"cam_type must be 'single' or 'multi', got {cam_type!r}")
         self.cameras = list(cameras or SURROUND_VIEWS) if cam_type == "multi" else None
         self.short_sides = (front_short_side, side_short_side)
+        self.patch_counts = (front_num_patches, side_num_patches)
+        for count in self.patch_counts:
+            if count is not None and (type(count) is not int or count < 1 or count == 2):
+                raise ValueError("image patch counts must be 1 or an integer >= 3, or null for dynamic tiling")
+        if any(count is not None for count in self.patch_counts) and cache_hidden_state:
+            raise ValueError("explicit image patch counts require cache_hidden_state=False")
+        if vlm_type.lower() == "qwen" and any(count is not None for count in self.patch_counts):
+            raise ValueError("front/side_num_patches count InternVL tiles; Qwen uses its native visual tokenizer")
         self.vlm_path = vlm_path
         self.checkpoint_path = checkpoint_path
         self.vlm_type = vlm_type
@@ -290,6 +306,7 @@ class ReCogDriveAgent(AbstractAgent):
             cameras=self.cameras,
             short_sides=self.short_sides,
             image_augment=image_augment,
+            patch_counts=self.patch_counts,
         )
 
     def vqa_worker_transform(self, max_length: Optional[int] = None):
@@ -307,6 +324,7 @@ class ReCogDriveAgent(AbstractAgent):
             max_length=int(max_length),
             num_image_token=getattr(self.backbone, "num_image_token", 256),
             short_sides=self.short_sides,
+            patch_counts=getattr(self, "patch_counts", (None, None)),
         )
 
     def initialize(self) -> None:

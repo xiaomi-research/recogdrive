@@ -71,9 +71,9 @@ def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbna
         processed_images.append(thumbnail_img)
     return processed_images
 
-def load_image(image_file, input_size=448, max_num=12, short_side=None, augment=None):
+def load_image(image_file, input_size=448, max_num=12, short_side=None, augment=None, num_patches=None):
     """InternVL tiles of an image; `short_side` rescales it first (e.g. 960 / 480 for multi-view),
-    `augment` is a PIL -> PIL training augmentation."""
+    `augment` is a PIL -> PIL training augmentation. Optional `num_patches` includes the global thumbnail."""
     image = (image_file if isinstance(image_file, Image.Image) else Image.open(image_file)).convert('RGB')
     if short_side:
         scale = short_side / min(image.size)
@@ -81,7 +81,13 @@ def load_image(image_file, input_size=448, max_num=12, short_side=None, augment=
     if augment is not None:
         image = augment(image)
     transform = build_transform(input_size=input_size)
-    images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=True, max_num=max_num)
+    if num_patches is None:
+        images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=True, max_num=max_num)
+    else:
+        if type(num_patches) is not int or num_patches < 1 or num_patches == 2:
+            raise ValueError("num_patches must be 1 or an integer >= 3 (crops plus a global thumbnail)")
+        crops = 1 if num_patches == 1 else num_patches - 1
+        images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=True, min_num=crops, max_num=crops)
     pixel_values = [transform(image) for image in images]
     pixel_values = torch.stack(pixel_values)
     return pixel_values
