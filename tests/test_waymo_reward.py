@@ -1,10 +1,12 @@
 import gzip
+import json
 import pickle
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MethodType
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -13,7 +15,7 @@ from omegaconf import OmegaConf
 
 from recogdrive.adapters.waymoe2e.reward import WaymoADEReward, WaymoRFSReward
 from recogdrive.data.waymoe2e import WaymoE2ECacheOnlyDataset, waymoe2e_loader
-from recogdrive.eval.openloop import pad_raters, rater_feedback_score, to_4hz
+from recogdrive.eval.openloop import WaymoE2EEvaluator, pad_raters, rater_feedback_score, to_4hz
 from recogdrive.models.recogdrive.diffusion_planner import ReCogDriveDiffusionPlanner
 
 
@@ -109,10 +111,15 @@ class WaymoRFSRewardTest(unittest.TestCase):
             self.assertGreater(float(actual[0]), float(actual[1]))
 
     def test_waymo_rfs_drives_grpo_rollout_and_policy_gradient(self):
+        for split in ("training", "val"):
+            with self.subTest(split=split):
+                self._check_rfs_gradient(split)
+
+    def _check_rfs_gradient(self, split):
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            _save(root / "training" / "frame_a" / "eval.gz", _labels())
-            reward = WaymoRFSReward(str(root), "training")
+            _save(root / split / "frame_a" / "eval.gz", _labels())
+            reward = WaymoRFSReward(str(root), split, dev_rfs=split == "val")
             candidates = torch.cat([_candidates(0.0), _candidates(50.0)])
             observed_tokens, rollout, gradient = _grpo_rollout_grad(reward, candidates)
 
@@ -185,6 +192,8 @@ class WaymoRFSRewardTest(unittest.TestCase):
             _save(root / "training" / "frame_a" / "eval.gz", _labels())
             with self.assertRaisesRegex(ValueError, "cannot read validation/test"):
                 WaymoRFSReward(str(root), "val")
+            with self.assertRaisesRegex(ValueError, "exact 'val'"):
+                WaymoRFSReward(str(root), "test", dev_rfs=True)
             reward = WaymoRFSReward(str(root), "training")
             with self.assertRaisesRegex(FileNotFoundError, "missing rater labels"):
                 reward(_candidates(), ["frame_missing"])
@@ -252,6 +261,34 @@ class WaymoRFSRewardTest(unittest.TestCase):
             cfg.waymoe2e_train_split = "val"
             with self.assertRaisesRegex(ValueError, "cannot read validation/test cache split"):
                 waymoe2e_loader(cfg, agent, "train")
+            agent.grpo = agent.grpo_waymo_dev_rfs = True
+            dev_train = waymoe2e_loader(cfg, agent, "train")
+            self.assertEqual(dev_train.split, "val")
+            self.assertEqual([path.name for path in dev_train.tokens], ["labelled"])
+            cfg.waymoe2e_train_split = "test"
+            with self.assertRaisesRegex(ValueError, "exact 'val'"):
+                waymoe2e_loader(cfg, agent, "train")
+
+    def test_waymo_development_metrics_are_distinguished_from_regular_val(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            frame = root / "val" / "frame_a"
+            _save(frame / "eval.gz", _labels())
+            _save(frame / "features.gz", {})
+            _save(frame / "targets.gz", _waypoints())
+            dataset = WaymoE2ECacheOnlyDataset(str(root), "val", future=10)
+            trainer = SimpleNamespace(model=None, ctx=SimpleNamespace(is_main=True),
+                                      agent=SimpleNamespace(trajectory_sampling=SimpleNamespace(
+                                          num_poses=10, interval_length=0.5)))
+            for dev, prefix in ((False, ""), (True, "dev_")):
+                cfg = OmegaConf.create({"agent": {"grpo_waymo_dev_rfs": dev}})
+                evaluator = WaymoE2EEvaluator(cfg, OmegaConf.create({}), root)
+                evaluator.dataset, evaluator.loader = dataset, object()
+                with patch("recogdrive.adapters.predict", return_value={"frame_a": _candidates()[0].numpy()}):
+                    evaluator.during_training(trainer, None, "final")
+                result = json.loads((root / "eval" / "final" / f"waymoe2e_{prefix}metrics.json").read_text())
+                self.assertEqual(result[prefix + "rfs"], 9.0)
+                self.assertEqual(evaluator.poll(), [("final", result)])
 
     def test_labelled_only_training_fails_when_no_labels_exist(self):
         with TemporaryDirectory() as temp:

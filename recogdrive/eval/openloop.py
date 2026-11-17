@@ -180,6 +180,7 @@ class OpenLoopEvaluator:
 
     in_process = True
     source = ""
+    metric_prefix = ""
 
     def __init__(self, cfg, section, output_dir: Path):
         self.cfg = cfg
@@ -213,9 +214,11 @@ class OpenLoopEvaluator:
             return
         sampling = trainer.agent.trajectory_sampling
         metrics = self.score(self.dataset, predictions, float(sampling.num_poses * sampling.interval_length))
+        if self.metric_prefix:
+            metrics = {self.metric_prefix + key: value for key, value in metrics.items()}
         out_dir = self.root / tag
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{self.source}_metrics.json").write_text(json.dumps(metrics, indent=2))
+        (out_dir / f"{self.source}_{self.metric_prefix}metrics.json").write_text(json.dumps(metrics, indent=2))
         self.results.append((tag, metrics))
 
     def score(self, dataset, predictions: Dict[str, np.ndarray], horizon_s: float) -> Dict[str, float]:
@@ -249,6 +252,11 @@ class NuScenesEvaluator(OpenLoopEvaluator):
 @register("waymoe2e")
 class WaymoE2EEvaluator(OpenLoopEvaluator):
     source = "waymoe2e"
+
+    def __init__(self, cfg, section, output_dir: Path):
+        super().__init__(cfg, section, output_dir)
+        if OmegaConf.select(cfg, "agent.grpo_waymo_dev_rfs", default=False) is True:
+            self.metric_prefix = "dev_"
 
     def score(self, dataset, predictions, horizon_s):
         if horizon_s < max(RFS_SECONDS):

@@ -22,8 +22,8 @@ from recogdrive.train.trainer import Trainer
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def labelled_cache(root):
-    frame = root / "training" / "sample"
+def labelled_cache(root, split="training"):
+    frame = root / split / "sample"
     frame.mkdir(parents=True, exist_ok=True)
     dump_feature_target_to_pickle(frame / "eval.gz", {
         "rater_trajectories": [np.zeros((20, 2))], "rater_scores": np.array([8.0]), "init_speed": 0.0,
@@ -63,8 +63,8 @@ def test_waymo_training_guard_rejects_unlabelled_or_other_cache(tmp_path):
 
 
 @pytest.mark.parametrize("tree", ["1.1", "2.0"])
-@pytest.mark.parametrize("reward_kind", ["waymo_ade", "waymo_rfs"])
-def test_waymo_rl_launcher_resolves_training_reward_config(tmp_path, tree, reward_kind, monkeypatch):
+@pytest.mark.parametrize("reward_kind,dev", [("waymo_ade", False), ("waymo_rfs", False), ("waymo_rfs", True)])
+def test_waymo_rl_launcher_resolves_training_reward_config(tmp_path, tree, reward_kind, dev, monkeypatch):
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("shell launcher check requires bash")
@@ -75,14 +75,17 @@ def test_waymo_rl_launcher_resolves_training_reward_config(tmp_path, tree, rewar
     checkpoint = tmp_path / "stage2.ckpt"
     checkpoint.write_bytes(b"launcher fixture")
     cache = tmp_path / "cache"
-    labelled_cache(cache)
+    split = "val" if dev else "training"
+    labelled_cache(cache, split)
     env = os.environ.copy()
     env.update(PATH=str(tmp_path) + os.pathsep + env["PATH"], RECOGDRIVE_CAPTURE=str(captured),
                NAVSIM_TREE=tree, GPUS="1", GPUS_PER_NODE="1", CHECKPOINT=str(checkpoint),
                CACHE_PATH=str(cache), LOG_FILE=str(tmp_path / "launch.log"), VLM_PATH="/weights/fixed",
                NAVSIM_EXP_ROOT=str(tmp_path / "exp"), MODEL_FAMILY="internvl3", WAYMO_GRPO_REWARD=reward_kind)
-    for key in ("NAVSIM_DEVKIT_ROOT", "WAYMOE2E_TRAIN_SPLIT", "WAYMOE2E_VAL_SPLIT"):
+    for key in ("NAVSIM_DEVKIT_ROOT", "WAYMOE2E_TRAIN_SPLIT", "WAYMOE2E_VAL_SPLIT", "WAYMO_DEV_RFS_RL"):
         env.pop(key, None)
+    if dev:
+        env["WAYMO_DEV_RFS_RL"] = "1"
     subprocess.run([bash, str(ROOT / "scripts/train/run_recogdrive_waymoe2e_stage3_rl.sh")],
                    cwd=ROOT, env=env, check=True, capture_output=True, text=True, timeout=30)
     argv = captured.read_bytes().decode().split("\0")[:-1]
@@ -97,4 +100,21 @@ def test_waymo_rl_launcher_resolves_training_reward_config(tmp_path, tree, rewar
     assert not cfg.agent.cache_hidden_state
     assert cfg.waymoe2e_labelled_only == (reward_kind == "waymo_rfs")
     assert cfg.agent.grpo_reward_cache_path == str(cache)
-    assert cfg.agent.grpo_reward_split == cfg.waymoe2e_train_split == "training"
+    assert cfg.agent.grpo_reward_split == cfg.waymoe2e_train_split == split
+    assert cfg.waymoe2e_val_split == "val"
+    assert cfg.agent.grpo_waymo_dev_rfs is dev
+    if dev:
+        assert cfg.evaluator.name == "waymoe2e" and cfg.skip_validation
+
+
+@pytest.mark.parametrize("dev,split,reward", [("0", "val", "waymo_rfs"), ("1", "test", "waymo_rfs"),
+                                             ("1", "val", "waymo_ade"), ("true", "val", "waymo_rfs")])
+def test_waymo_launcher_rejects_invalid_development_modes(dev, split, reward):
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("shell launcher check requires bash")
+    env = dict(os.environ, WAYMO_DEV_RFS_RL=dev, WAYMOE2E_TRAIN_SPLIT=split,
+               WAYMOE2E_VAL_SPLIT="val", WAYMO_GRPO_REWARD=reward)
+    result = subprocess.run([bash, str(ROOT / "scripts/train/run_recogdrive_waymoe2e_stage3_rl.sh")],
+                            cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2 and "WAYMO_DEV_RFS_RL" in result.stderr

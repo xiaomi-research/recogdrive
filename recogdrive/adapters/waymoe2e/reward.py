@@ -15,17 +15,21 @@ class WaymoRFSReward:
     """Score each candidate against its training frame's cached WOD-E2E rater labels.
 
     ``tokens`` has one entry per candidate trajectory, as in the planner reward contract. GRPO repeats each
-    training token once per sampled candidate. Labels are read only from the configured training split.
+    training token once per sampled candidate. The explicit development recipe may use the official val split.
     """
 
     _FORBIDDEN_SPLITS = {"val", "valid", "validation", "test", "testing", "eval", "evaluation"}
 
-    def __init__(self, cache_path: str, split: str = "training"):
+    def __init__(self, cache_path: str, split: str = "training", *, dev_rfs: bool = False):
         self.cache_path = Path(cache_path).expanduser().resolve()
         self.split = str(split)
         if not self.split or self.split in (".", "..") or Path(self.split).name != self.split:
             raise ValueError(f"Waymo RFS reward split must be one cache directory name, got {self.split!r}")
-        if self.split.lower() in self._FORBIDDEN_SPLITS:
+        if type(dev_rfs) is not bool:
+            raise ValueError("Waymo dev_rfs must be a boolean")
+        if dev_rfs and self.split != "val":
+            raise ValueError("Waymo developer RFS RL requires the exact 'val' cache split")
+        if not dev_rfs and self.split.lower() in self._FORBIDDEN_SPLITS:
             raise ValueError(f"Waymo RFS rewards cannot read validation/test split {self.split!r}; use a training split")
         self.split_path = (self.cache_path / self.split).resolve()
         try:

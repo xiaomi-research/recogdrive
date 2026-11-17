@@ -255,7 +255,10 @@ def waymoe2e_loader(cfg, agent, split: str):
     key = "waymoe2e_train_split" if split == "train" else "waymoe2e_val_split"
     labelled_only = bool(getattr(cfg, "waymoe2e_labelled_only", False)) if split == "train" else False
     cache_split = str(getattr(cfg, key, default))
-    if labelled_only and cache_split.lower() in {"val", "valid", "validation", "test", "testing", "eval", "evaluation"}:
+    dev_rfs = split == "train" and getattr(agent, "grpo_waymo_dev_rfs", False)
+    if dev_rfs and (cache_split != "val" or not labelled_only or not getattr(agent, "grpo", False)):
+        raise ValueError("Waymo developer RFS RL requires GRPO and labelled-only training on the exact 'val' cache split")
+    if not dev_rfs and labelled_only and cache_split.lower() in {"val", "valid", "validation", "test", "testing", "eval", "evaluation"}:
         raise ValueError(f"labelled-only Waymo training cannot read validation/test cache split {cache_split!r}")
     return WaymoE2ECacheOnlyDataset(
         cache_path=cfg.cache_path,

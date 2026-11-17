@@ -33,6 +33,7 @@ grpo_reward_workers: null  # processes per rank scoring the reward; null: half t
 grpo_reward: navsim_pdm  # explicit extensions: waymo_ade (logged targets) | waymo_rfs (training rater labels), >=5 s
 grpo_reward_cache_path: null
 grpo_reward_split: training
+grpo_waymo_dev_rfs: false  # opt in to RL on official Waymo val; its RFS is a development-set result
 optimizer_type: adamw
 lr: 1e-4
 lr_schedule: main  # main epoch recipe; step: follows configured training length

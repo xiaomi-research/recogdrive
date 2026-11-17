@@ -130,6 +130,8 @@ class ReCogDriveAgent(AbstractAgent):
         lora_alpha: float = 16.0,
         lora_dropout: float = 0.05,
         lora_targets: Optional[List[str]] = None,
+        *,
+        grpo_waymo_dev_rfs: bool = False,
     ):
         """cam_type 'multi' feeds `cameras` (default: every surround view the data source has) with the
         front view rescaled to front_short_side and the others to side_short_side (None keeps native size); 'single'
@@ -155,9 +157,14 @@ class ReCogDriveAgent(AbstractAgent):
         self._lr = lr
         self.grpo = grpo
         self.grpo_reward = str(grpo_reward).lower()
+        if type(grpo_waymo_dev_rfs) is not bool:
+            raise ValueError("grpo_waymo_dev_rfs must be a boolean")
+        self.grpo_waymo_dev_rfs = grpo_waymo_dev_rfs
         waymo_reward = None
         if self.grpo_reward not in ("navsim_pdm", "waymo_rfs", "waymo_ade"):
             raise ValueError(f"grpo_reward must be navsim_pdm, waymo_rfs or waymo_ade, got {grpo_reward!r}")
+        if grpo_waymo_dev_rfs and (self.grpo_reward != "waymo_rfs" or grpo_reward_split != "val"):
+            raise ValueError("grpo_waymo_dev_rfs requires waymo_rfs and grpo_reward_split=val")
         if self.grpo and self.grpo_reward in ("waymo_rfs", "waymo_ade"):
             if not grpo_reward_cache_path:
                 raise ValueError("Waymo GRPO needs grpo_reward_cache_path pointing to training caches")
@@ -165,8 +172,10 @@ class ReCogDriveAgent(AbstractAgent):
                 raise ValueError("Waymo GRPO needs at least a 5 s horizon with 0.5 s poses")
             from recogdrive.adapters.waymoe2e.reward import WaymoADEReward, WaymoRFSReward
 
-            reward_class = WaymoRFSReward if self.grpo_reward == "waymo_rfs" else WaymoADEReward
-            waymo_reward = reward_class(grpo_reward_cache_path, grpo_reward_split)
+            if self.grpo_reward == "waymo_rfs":
+                waymo_reward = WaymoRFSReward(grpo_reward_cache_path, grpo_reward_split, dev_rfs=grpo_waymo_dev_rfs)
+            else:
+                waymo_reward = WaymoADEReward(grpo_reward_cache_path, grpo_reward_split)
         self.backbone = None
         self.metric_cache_path = metric_cache_path
         self.reference_policy_checkpoint = reference_policy_checkpoint
