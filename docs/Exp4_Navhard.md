@@ -14,6 +14,18 @@ MAX_EPOCHS=30 GPUS=4 SAMPLING_METHOD=ddim \
 bash scripts/train/run_recogdrive_internvl3_waypoint_il_muon.sh "${EXP4[@]}"
 ```
 
+On a single 24 GiB RTX 3090, use batch size 1 and enable decoder activation checkpointing:
+
+```bash
+CACHE_HIDDEN_STATE=False CACHE_PATH=/path/to/multi_view_cache VLM_PATH=/path/to/internvl \
+MAX_EPOCHS=30 GPUS=1 BATCH_SIZE=1 SAMPLING_METHOD=ddim \
+bash scripts/train/run_recogdrive_internvl3_waypoint_il_muon.sh "${EXP4[@]}" \
+  train.strategy=ddp train.precision=bf16 train.compile=false \
+  'train.activation_checkpointing=[Qwen2DecoderLayer]'
+```
+
+These single-card settings passed one real eight-camera NAVSIM IL update and a fresh checkpoint reload with LoRA rank 128 and the 8704-token limit. Peak allocated GPU memory was 8.36 GiB; the run without activation checkpointing exhausted GPU memory before the first update. This check does not establish memory usage for larger batches or for RL.
+
 For RL, reuse the same overrides and cache, set `OPTIMIZER_TYPE=muon`, `CHECKPOINT` to the matching IL checkpoint and `METRIC_CACHE_PATH` to the training metric cache, and use `scripts/train/run_recogdrive_internvl3_waypoint_rl.sh`. Tile counts default to unset for other runs and do not apply to Qwen.
 
 ## Navhard: use the saved training configuration
