@@ -49,7 +49,8 @@ export CACHE_PATH="$WAYMOE2E_CACHE_PATH"
 export SAMPLING_METHOD=ddim  # Use the same selected sampler for both stages.
 WAYMO_ARGS=(agent.cam_type=multi agent.vlm_max_length=8704 agent.lora_rank=128
             agent.lora_alpha=16 train.ema_decay=0.999 'train.replicate_frozen=[]'
-            agent.trajectory_sampling.time_horizon=5)
+            agent.trajectory_sampling.time_horizon=5
+            'agent.qwen_image_short_sides=[960,480]' agent.qwen_max_input_tokens=8704)
 
 WAYMOE2E_TRAIN_SPLIT=training WAYMOE2E_VAL_SPLIT=val MAX_EPOCHS=30 \
 EXPERIMENT_NAME=exp5_waymo_il LOG_FILE=exp5_waymo_il.log \

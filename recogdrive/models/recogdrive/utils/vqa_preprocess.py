@@ -7,6 +7,7 @@ from recogdrive.models.recogdrive.backbone import (
     IMG_END_TOKEN,
     IMG_START_TOKEN,
     process_vision_info,
+    qwen_image_content,
 )
 from recogdrive.models.recogdrive.utils.internvl_preprocess import load_image
 
@@ -57,13 +58,13 @@ def _prepare_internvl(tokenizer, image_paths, question, answer, max_length, num_
     return features
 
 
-def _prepare_qwen(processor, image_paths, question, answer, max_length):
+def _prepare_qwen(processor, image_paths, question, answer, max_length, short_sides):
     if process_vision_info is None:
         raise ImportError("qwen_vl_utils is required to prepare Qwen-VL VQA samples")
     messages = [
         {"role": "system", "content": VQA_SYSTEM_PROMPT},
         {"role": "user", "content": [
-            *({"type": "image", "image": path} for path in image_paths),
+            *qwen_image_content(image_paths, [short_sides[0 if index == 0 else 1] for index in range(len(image_paths))]),
             {"type": "text", "text": question},
         ]},
     ]
@@ -92,7 +93,7 @@ def prepare_vqa_features(features, tokenizer, model_type, max_length, num_image_
         processed = _prepare_internvl(tokenizer, image_paths, question, answer, max_length, num_image_token,
                                       short_sides, patch_counts)
     elif str(model_type).lower() == "qwen":
-        processed = _prepare_qwen(tokenizer, image_paths, question, answer, max_length)
+        processed = _prepare_qwen(tokenizer, image_paths, question, answer, max_length, short_sides)
     else:
         raise ValueError(f"Unsupported VQA backbone {model_type!r}; expected 'internvl' or 'qwen'")
     result = {key: value for key, value in features.items() if key not in ("question", "answer", "image_paths")}

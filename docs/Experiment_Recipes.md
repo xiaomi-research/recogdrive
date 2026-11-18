@@ -61,13 +61,14 @@ The example uses the single-3090 settings verified for one IL update and reload.
 ## Exp5: Qwen visual tokenization
 
 ```bash
+QWEN_INPUT=('agent.qwen_image_short_sides=[960,480]' agent.qwen_max_input_tokens=8704)
 SAMPLING_METHOD="$SAMPLE" MAX_EPOCHS=30 EXPERIMENT_NAME=exp5_navsim11_il LOG_FILE=exp5_navsim11_il.log \
 VLM_PATH=/path/to/UniDriveVLA_Nusc_Base_Stage1 \
 CACHE_PATH=/path/to/navsim_multi_image_cache \
-bash scripts/train/run_recogdrive_qwenvl3_unidrive_il.sh "${LORA128[@]}" "${MULTI[@]}"
+bash scripts/train/run_recogdrive_qwenvl3_unidrive_il.sh "${LORA128[@]}" "${MULTI[@]}" "${QWEN_INPUT[@]}"
 ```
 
-Exp5 uses Qwen's native visual tokenizer and the surround-view image paths. On published commit `f257fe7`, the 960/480 resize settings apply to the InternVL transform and Qwen uses its processor's sizing. An Exp5 comparison with strict per-view resizing requires a revision that forwards those sizes to the Qwen processor.
+Exp5 passes target short sides of 960 for the front view and 480 for the other views to the Qwen processor, which aligns dimensions to its visual patch grid. The planning prompt is limited to 8704 tokens, including image tokens. Qwen uses its processor defaults when the two Qwen overrides are unset.
 
 The plain Qwen3-VL-2B-Instruct weights available on the server are sufficient for a smoke check, but are not a substitute for the requested UniDriveVLA Stage1 weights in the final Exp5 comparison.
 
@@ -93,7 +94,7 @@ PYTHONPATH=navsim1.1:. python -m recogdrive.data.physicalai \
 PAI_VIEWS=multi MODEL_FAMILY=qwenvl3 SAMPLING_METHOD="$SAMPLE" MAX_EPOCHS=30 \
 PHYSICALAI_ROOT=/path/to/physicalai_cache VLM_PATH=/path/to/UniDriveVLA_Nusc_Base_Stage1 \
 EXPERIMENT_NAME=exp5_physicalai_il LOG_FILE=exp5_physicalai_il.log \
-bash scripts/train/run_recogdrive_physicalai_il.sh "${LORA128[@]}"
+bash scripts/train/run_recogdrive_physicalai_il.sh "${LORA128[@]}" "${QWEN_INPUT[@]}"
 ```
 
 For Exp1/2 RL use `FROZEN`, the front cache, and that experiment's sampler. For Exp3 RL use `LORA128` with the front cache. In each case supply the corresponding IL checkpoint and a distinct experiment name and log. Plan the RL batch size separately from the single-card IL check.

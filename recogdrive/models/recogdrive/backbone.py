@@ -53,6 +53,27 @@ def _flex_attention_mask_torch26(batch_size, cache_position, kv_length, kv_offse
                                  KV_LEN=kv_length, device=cache_position.device, _compile=False)
 
 
+def qwen_image_content(paths, short_sides=None):
+    """Explicit per-view resizing understood by the installed qwen_vl_utils processor."""
+    if short_sides is not None and len(short_sides) != len(paths):
+        raise ValueError("Qwen needs one image size per camera")
+    content = []
+    for index, path in enumerate(paths):
+        item = {"type": "image", "image": path}
+        side = short_sides[index] if short_sides is not None else None
+        if side is not None:
+            if type(side) is not int or side < 1:
+                raise ValueError("Qwen image short sides must be positive integers or null")
+            if isinstance(path, Image.Image):
+                width, height = path.size
+            else:
+                with Image.open(path) as image:
+                    width, height = image.size
+            scale = side / min(width, height)
+            item.update(resized_width=round(width * scale), resized_height=round(height * scale))
+        content.append(item)
+    return content
+
 system_message = """
 You are a vehicle trajectory prediction model for autonomous driving. Your task is to predict the ego vehicle's 4-second trajectory based on the following inputs: multi-view images from 8 cameras, ego vehicle states (position), and discrete navigation commands. The input provides a 2-second history, and your output should ensure a safe trajectory for the next 4 seconds. Your predictions must adhere to the following metrics:
 1. **No at-fault Collisions (NC)**: Avoid collisions with other objects/vehicles.
@@ -128,6 +149,7 @@ class RecogDriveBackbone(nn.Module):
     for different model architectures (InternVL, Qwen-VL).
     """
     system_prompt = system_message
+    qwen_max_input_tokens = None
 
     def __init__(self,
                  model_type: str,
@@ -135,7 +157,8 @@ class RecogDriveBackbone(nn.Module):
                  device: str = "cuda",
                  max_length: int = 2800,
                  planning_horizon_s: float = 4.0,
-                 planning_interval_s: float = 0.5):
+                 planning_interval_s: float = 0.5,
+                 qwen_max_input_tokens: Optional[int] = None):
         """
         Initializes and loads the specified model and its preprocessor/tokenizer.
 
@@ -153,6 +176,9 @@ class RecogDriveBackbone(nn.Module):
         self.device = device
         self.max_length = max_length
         self.system_prompt = planning_system_prompt(planning_horizon_s, planning_interval_s)
+        if qwen_max_input_tokens is not None and (type(qwen_max_input_tokens) is not int or qwen_max_input_tokens < 1):
+            raise ValueError("qwen_max_input_tokens must be a positive integer or null")
+        self.qwen_max_input_tokens = qwen_max_input_tokens
 
         print(f"Initializing backbone of type: '{self.model_type}' from path: '{checkpoint_path}'")
 
@@ -293,14 +319,14 @@ class RecogDriveBackbone(nn.Module):
         print("InternVL model configured.")
 
     def forward(self, pixel_values: Union[torch.Tensor, List[str]], questions: List[str],
-                num_patches_list: Optional[List[int]] = None) -> torch.Tensor:
+                num_patches_list: Optional[List[int]] = None, image_short_sides=None) -> torch.Tensor:
         """The language model's final hidden states (B, tokens, hidden), the same values as `hidden_states[-1]` of
         the chat model's forward. Only the decoder runs: its LM head would compute logits over every position that
         nothing uses."""
         if not self.model:
             raise RuntimeError("Backbone model has not been initialized. Call initialize() on the agent first.")
         if self.model_type == "qwen":
-            return self.forward_qwen(pixel_values, questions)
+            return self.forward_qwen(pixel_values, questions, image_short_sides)
         
         model_dtype = next(self.model.parameters()).dtype
 
@@ -344,21 +370,23 @@ class RecogDriveBackbone(nn.Module):
             inputs_embeds=embeds, attention_mask=attention_mask, position_ids=position_ids, use_cache=False,
         ).last_hidden_state
 
-    def forward_qwen(self, image_paths: List, questions: List[str]):
+    def forward_qwen(self, image_paths: List, questions: List[str], image_short_sides=None):
         if process_vision_info is None:
             raise ImportError("qwen_vl_utils is required for Qwen-VL preprocessing.")
         if not isinstance(image_paths, list):
             raise TypeError("Qwen-VL backbone expects a list of samples containing paths or PIL images.")
+        if len(image_paths) != len(questions) or (image_short_sides is not None and len(image_short_sides) != len(questions)):
+            raise ValueError("Qwen image batches, questions and per-view sizes must have equal lengths")
 
         messages_batch = []
-        for image_path, question in zip(image_paths, questions):
+        for index, (image_path, question) in enumerate(zip(image_paths, questions)):
             paths = [image_path] if isinstance(image_path, (str, Image.Image)) else list(image_path)
             messages_batch.append([
                 {"role": "system", "content": self.system_prompt},
                 {
                     "role": "user",
                     "content": [
-                        *({"type": "image", "image": path} for path in paths),
+                        *qwen_image_content(paths, image_short_sides[index] if image_short_sides is not None else None),
                         {"type": "text", "text": question.replace("<image>\n", "").replace("<image>", "")},
                     ],
                 },
@@ -383,7 +411,11 @@ class RecogDriveBackbone(nn.Module):
             videos=video_inputs or None,
             padding=True,
             return_tensors="pt",
-        ).to(self.device)
+        )
+        limit = self.qwen_max_input_tokens
+        if limit is not None and model_inputs["input_ids"].shape[-1] > limit:
+            raise ValueError(f"Qwen prompt exceeds qwen_max_input_tokens={limit}; reduce the image sizes or camera count")
+        model_inputs = model_inputs.to(self.device)
 
         # The generation model's own hidden_states[-1]: for Qwen3-VL it is the last decoder layer before the final
         # norm, unlike self.model.model's. logits_to_keep=1 leaves the LM head one position instead of every token.

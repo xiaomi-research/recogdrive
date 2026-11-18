@@ -2,6 +2,7 @@
 training glue (checkpoint loading, loss, optimizers, GRPO reward). The network is the backbone and
 diffusion planner imported below."""
 
+from collections.abc import Sequence
 from typing import Any, List, Dict, Optional, Tuple, Union
 import contextlib
 import dataclasses
@@ -59,8 +60,8 @@ def prepare_vlm_inputs(
 ) -> Dict[str, Any]:
     """Runs in dataloader workers: prompt and image paths as Python strings, so the model never reads
     them back from GPU tensors, plus the InternVL tiles when load_tiles. `cameras` selects the
-    views of a multi-view prompt (front / other views rescaled to `short_sides`); None keeps the
-    single front view at its native resolution."""
+    views of a multi-view prompt (front / other views use `short_sides`). InternVL single view stays
+    at native resolution. Qwen can carry one optional image size per selected view."""
     views = camera_views(features)
     if cameras and any(count is not None for count in patch_counts) and set(cameras).difference(view for view, _ in views):
         raise ValueError("fixed multi-view patch budgets require all selected cameras; rebuild the multi-view cache")
@@ -74,7 +75,7 @@ def prepare_vlm_inputs(
         features["image_paths"] = [path for _, path in views]
     else:
         views = [next((view for view in views if view[0] == "front"), views[0])]
-        sizes = [None]
+        sizes = [None if load_tiles else short_sides[0 if views[0][0] == "front" else 1]]
         counts = [patch_counts[0]]
         features["image_paths"] = views[0][1]
     features["vlm_question"] = ReCogDriveAgent.vlm_questions(
@@ -87,6 +88,8 @@ def prepare_vlm_inputs(
                              for (_, path), size, count in zip(views, sizes, counts)]
         features["pixel_values"] = torch.cat(pixel_values_list, dim=0)
         features["num_patches"] = torch.tensor([pv.shape[0] for pv in pixel_values_list])
+    elif any(size is not None for size in short_sides):
+        features["image_short_sides"] = sizes
     return features
 
 
@@ -140,6 +143,8 @@ class ReCogDriveAgent(AbstractAgent):
         side_num_patches: Optional[int] = None,
         *,
         grpo_waymo_dev_rfs: bool = False,
+        qwen_image_short_sides: Optional[Sequence[Optional[int]]] = None,
+        qwen_max_input_tokens: Optional[int] = None,
     ):
         """cam_type 'multi' feeds `cameras` (default: every surround view the data source has) with the
         front view rescaled to front_short_side and the others to side_short_side (None keeps native size); 'single'
@@ -155,14 +160,22 @@ class ReCogDriveAgent(AbstractAgent):
         if cam_type not in ("single", "multi"):
             raise ValueError(f"cam_type must be 'single' or 'multi', got {cam_type!r}")
         self.cameras = list(cameras or SURROUND_VIEWS) if cam_type == "multi" else None
-        self.short_sides = (front_short_side, side_short_side)
+        is_qwen = vlm_type.lower() == "qwen"
+        if (qwen_image_short_sides is not None or qwen_max_input_tokens is not None) and (not is_qwen or cache_hidden_state):
+            raise ValueError("Qwen image options require a Qwen VLM and cache_hidden_state=False")
+        if qwen_image_short_sides is not None and (
+            not isinstance(qwen_image_short_sides, Sequence) or len(qwen_image_short_sides) != 2
+            or any(size is not None and (type(size) is not int or size < 1) for size in qwen_image_short_sides)
+        ):
+            raise ValueError("qwen_image_short_sides must contain two positive integers or nulls (front, other)")
+        self.short_sides = tuple(qwen_image_short_sides or (None, None)) if is_qwen else (front_short_side, side_short_side)
         self.patch_counts = (front_num_patches, side_num_patches)
         for count in self.patch_counts:
             if count is not None and (type(count) is not int or count < 1 or count == 2):
                 raise ValueError("image patch counts must be 1 or an integer >= 3, or null for dynamic tiling")
         if any(count is not None for count in self.patch_counts) and cache_hidden_state:
             raise ValueError("explicit image patch counts require cache_hidden_state=False")
-        if vlm_type.lower() == "qwen" and any(count is not None for count in self.patch_counts):
+        if is_qwen and any(count is not None for count in self.patch_counts):
             raise ValueError("front/side_num_patches count InternVL tiles; Qwen uses its native visual tokenizer")
         self.vlm_path = vlm_path
         self.checkpoint_path = checkpoint_path
@@ -246,6 +259,7 @@ class ReCogDriveAgent(AbstractAgent):
                 max_length=vlm_max_length or (8704 if self.cameras else 2800),
                 planning_horizon_s=trajectory_sampling.time_horizon,
                 planning_interval_s=trajectory_sampling.interval_length,
+                qwen_max_input_tokens=qwen_max_input_tokens,
             )
             if lora_rank:
                 self.backbone.add_lora(lora_rank, lora_alpha, lora_dropout, lora_targets)
@@ -514,7 +528,9 @@ class ReCogDriveAgent(AbstractAgent):
 
             vlm_ctx = torch.no_grad() if not self.vlm_trainable else contextlib.nullcontext()
             with vlm_ctx:
-                last_hidden_state = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
+                options = ({"image_short_sides": features["image_short_sides"]}
+                           if self.vlm_type.lower() == "qwen" and "image_short_sides" in features else {})
+                last_hidden_state = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list, **options)
 
         status_feature = features["status_feature"]
         if status_feature.ndim == 1:
