@@ -33,6 +33,25 @@ IMG_CONTEXT_TOKEN = '<IMG_CONTEXT>'
 IMG_START_TOKEN = '<img>'
 IMG_END_TOKEN = '</img>'
 
+def _flex_attention_mask_torch26(batch_size, cache_position, kv_length, kv_offset=0,
+                                 mask_function=None, attention_mask=None, **kwargs):
+    from torch.nn.attention.flex_attention import create_block_mask
+    from transformers.masking_utils import (
+        TransformGetItemToIndex, add_offsets_to_mask_function, and_masks,
+        causal_mask_function, padding_mask_function, prepare_padding_mask,
+    )
+
+    predicate = mask_function or causal_mask_function
+    if attention_mask is not None:
+        padding = prepare_padding_mask(attention_mask, kv_length, kv_offset, _slice=False)
+        predicate = and_masks(predicate, padding_mask_function(padding))
+    predicate = add_offsets_to_mask_function(predicate, cache_position[0], kv_offset)
+    # Compiling mask construction produces symbolic sparse indices that Torch 2.6 cannot autotune.
+    with TransformGetItemToIndex():
+        return create_block_mask(predicate, B=batch_size, H=None, Q_LEN=cache_position.shape[0],
+                                 KV_LEN=kv_length, device=cache_position.device, _compile=False)
+
+
 system_message = """
 You are a vehicle trajectory prediction model for autonomous driving. Your task is to predict the ego vehicle's 4-second trajectory based on the following inputs: multi-view images from 8 cameras, ego vehicle states (position), and discrete navigation commands. The input provides a 2-second history, and your output should ensure a safe trajectory for the next 4 seconds. Your predictions must adhere to the following metrics:
 1. **No at-fault Collisions (NC)**: Avoid collisions with other objects/vehicles.
@@ -161,22 +180,27 @@ class RecogDriveBackbone(nn.Module):
         # whose backward costs 8x its forward on a 3090; flex skips the masked blocks, with the same outputs up to
         # bf16 rounding (padding rows identical). It runs outside the compiled decoder blocks, compiled by
         # transformers itself: inside a block graph torch 2.6 finds no flex backward kernel that fits a 3090.
-        if torch.cuda.is_available():
+        on_cuda = torch.device(self.device).type == "cuda"
+        if on_cuda:
             torch.backends.cuda.enable_flash_sdp(True)
             torch.backends.cuda.enable_mem_efficient_sdp(True)
         language_attention = None
         language_model = getattr(self.model, "language_model", None)
         if language_model is not None and hasattr(language_model, "set_attn_implementation"):
-            try:
-                from transformers import AttentionInterface, AttentionMaskInterface
-                from transformers.integrations.flex_attention import flex_attention_forward
-                from transformers.masking_utils import flex_attention_mask
+            candidates = ("sdpa",)
+            if on_cuda:
+                try:
+                    from transformers import AttentionInterface, AttentionMaskInterface
+                    from transformers.integrations.flex_attention import flex_attention_forward
+                    from transformers.masking_utils import flex_attention_mask
 
-                AttentionInterface.register(FLEX_OWN_COMPILE, torch.compiler.disable(flex_attention_forward))
-                AttentionMaskInterface.register(FLEX_OWN_COMPILE, flex_attention_mask)
-                candidates = (FLEX_OWN_COMPILE, "sdpa")
-            except ImportError:
-                candidates = ("sdpa",)
+                    AttentionInterface.register(FLEX_OWN_COMPILE, torch.compiler.disable(flex_attention_forward))
+                    mask_factory = (_flex_attention_mask_torch26 if torch.__version__.startswith("2.6.")
+                                    else flex_attention_mask)
+                    AttentionMaskInterface.register(FLEX_OWN_COMPILE, mask_factory)
+                    candidates = (FLEX_OWN_COMPILE, "sdpa")
+                except ImportError:
+                    pass
             for language_attention in candidates:
                 try:
                     language_model.set_attn_implementation(language_attention)

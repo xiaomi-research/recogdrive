@@ -1,8 +1,9 @@
 import sys
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import ModuleType, SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 from omegaconf import OmegaConf
@@ -10,8 +11,41 @@ from omegaconf import OmegaConf
 from recogdrive.adapters.navsim.agent import ReCogDriveAgent
 from recogdrive.data.registry import collate
 from recogdrive.data.vqa import vqa_loader
-from recogdrive.models.recogdrive.backbone import RecogDriveBackbone
+from recogdrive.models.recogdrive.backbone import RecogDriveBackbone, _flex_attention_mask_torch26
 from recogdrive.models.recogdrive.utils.vqa_preprocess import answer_only_tensors
+
+
+def test_internvl_cpu_attention_uses_sdpa_even_when_cuda_is_available():
+    backbone = RecogDriveBackbone.__new__(RecogDriveBackbone)
+    nn.Module.__init__(backbone)
+    backbone.device = "cpu"
+    backbone.model = nn.Module()
+    backbone.model.language_model = nn.Module()
+    select = Mock()
+    backbone.model.language_model.set_attn_implementation = select
+    with patch("torch.cuda.is_available", return_value=True), \
+            patch("torch.compiler.disable", side_effect=AssertionError("CPU must not select compiled flex attention")), \
+            patch("torch.backends.cuda.enable_flash_sdp") as enable_flash:
+        backbone.set_attention()
+    select.assert_called_once_with("sdpa")
+    enable_flash.assert_not_called()
+
+
+@pytest.mark.parametrize("q_offset,kv_offset,query_length,kv_length", [(0, 0, 4, 4), (3, 0, 4, 7), (4, 2, 3, 5)])
+def test_eager_flex_mask_keeps_causality_padding_and_cache_offsets(q_offset, kv_offset, query_length, kv_length):
+    padding = torch.ones(2, kv_offset + kv_length, dtype=torch.bool)
+    padding[0, :2] = False
+    padding[1, -1] = False
+    previous_suppression = torch._dynamo.config.suppress_errors
+    mask = _flex_attention_mask_torch26(2, torch.arange(q_offset, q_offset + query_length), kv_length,
+                                       kv_offset=kv_offset, attention_mask=padding)
+    for batch in range(2):
+        for query in range(query_length):
+            for key in range(kv_length):
+                actual = mask.mask_mod(torch.tensor(batch), torch.tensor(0), torch.tensor(query), torch.tensor(key))
+                expected = key + kv_offset <= query + q_offset and bool(padding[batch, key + kv_offset])
+                assert bool(actual) == expected
+    assert torch._dynamo.config.suppress_errors == previous_suppression
 
 
 def test_vqa_source_only_requires_the_adapter_transform(tmp_path):
