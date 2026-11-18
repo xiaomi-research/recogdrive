@@ -68,3 +68,10 @@ bash scripts/train/run_recogdrive_waymoe2e_stage3_rl.sh \
 ```
 
 This switch selects `val` and `waymo_rfs` for training, enables the Waymo evaluator on `val`, and skips the ordinary validation loss. Final metrics are written under `eval/waymoe2e/final/waymoe2e_dev_metrics.json` with keys such as `dev_rfs`. Scores on this split after RL are development-set results; use separate, unseen data for an independent evaluation. The switch does not permit `test` or other held-out splits as training inputs.
+
+For a small run on one RTX 3090, convert a few real records per split, with rater labels in `val`. Use `GPUS=1 BATCH_SIZE=1 MAX_EPOCHS=1` for both launchers, including replacing the inline `MAX_EPOCHS=30` in the IL command. Append the following to `WAYMO_ARGS` before launching either stage. Finishing the epoch on the small cache writes the IL checkpoint used by stage 3.
+
+```bash
+WAYMO_ARGS+=(train.strategy=ddp train.precision=bf16 train.compile=false
+             'train.activation_checkpointing=[Qwen3VLTextDecoderLayer]')
+```

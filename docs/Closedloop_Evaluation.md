@@ -10,7 +10,7 @@ You can evaluate a saved checkpoint without starting training. Use the same Pyth
 
 ```bash
 python scripts/verify/closedloop_eval.py \
-  --training-config /path/to/experiment/.hydra/config.yaml \
+  --training-config /path/to/experiment/code/hydra/config.yaml \
   --checkpoint /path/to/experiment/last.ckpt \
   --protocol alpasim \
   --output-dir /path/to/new/closedloop-eval

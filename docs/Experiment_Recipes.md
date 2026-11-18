@@ -14,7 +14,7 @@ The commands set EMA decay to 0.999 and LoRA alpha to 16. They use 30 IL epochs 
 
 ## NAVSIM 1.1: start with Exp1/2
 
-Set the dataset, map, and output paths for your environment. Keep the arrays below in the same Bash session for the following NAVSIM examples. [Training setup](Train_Eval.md)
+Set the dataset and output paths for your environment. Point `NUPLAN_MAPS_ROOT` to the extracted nuPlan maps before building the image-path cache. NAVSIM RL uses a metric cache covering the same training scene tokens. Keep the arrays below in the same Bash session for the following NAVSIM examples. [Training setup](Train_Eval.md)
 
 ```bash
 export NAVSIM_TREE=1.1 GPUS=4 CACHE_HIDDEN_STATE=False OPTIMIZER_TYPE=muon
@@ -37,7 +37,7 @@ SAMPLING_METHOD="$SAMPLE" MAX_EPOCHS=30 EXPERIMENT_NAME=exp3_navsim11_il LOG_FIL
 bash scripts/train/run_recogdrive_internvl3_waypoint_il_muon.sh "${LORA128[@]}"
 ```
 
-Use the same initialization, split, and budget for Exp1 and Exp2. Set `SAMPLE` to the selected `ddim` or `flow` for Exp3–5. Prefix an individual training command with `MAX_STEPS=1 SKIP_VALIDATION=True` for a one-step smoke check.
+Use the same initialization, split, and budget for Exp1 and Exp2. Set `SAMPLE` to the selected `ddim` or `flow` for Exp3–5. Prefix an individual training command with `MAX_STEPS=1 SKIP_VALIDATION=True` for a one-step smoke check. To produce `last.ckpt` for a follow-up stage, use a one-batch cache and set `MAX_EPOCHS=1` on the training command so the run reaches epoch export.
 
 ## Exp4: exact InternVL image budgets
 
