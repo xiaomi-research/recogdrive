@@ -1,3 +1,4 @@
+import math
 from typing import List, Optional, Union
 import types
 import torch
@@ -65,6 +66,21 @@ Your predictions will be evaluated through a non-reactive 4-second simulation wi
 """
 
 
+def planning_system_prompt(horizon_s=4.0, interval_s=0.5):
+    seconds = float(horizon_s)
+    interval = float(interval_s)
+    if not math.isfinite(seconds) or seconds <= 0 or not math.isfinite(interval) or interval <= 0:
+        raise ValueError("planning horizon and interval must be finite and positive")
+    if seconds == 4.0 and interval == 0.5:
+        return system_message
+    return (
+        f"You are a vehicle trajectory prediction model for autonomous driving. Predict the ego vehicle's "
+        f"{seconds:g}-second trajectory using the camera images, ego motion history and navigation command. "
+        f"Output future poses at {interval:g}-second intervals in the current ego frame (x forward, y left, heading in "
+        "radians). Follow the trajectory format requested by the user."
+    )
+
+
 def hidden_size_from_vlm_config(config):
     for nested_name in ("text_config", "llm_config"):
         nested = getattr(config, nested_name, None)
@@ -111,11 +127,15 @@ class RecogDriveBackbone(nn.Module):
     A simplified vision-language model backbone with direct loading logic
     for different model architectures (InternVL, Qwen-VL).
     """
+    system_prompt = system_message
+
     def __init__(self,
                  model_type: str,
                  checkpoint_path: str,
                  device: str = "cuda",
-                 max_length: int = 2800):
+                 max_length: int = 2800,
+                 planning_horizon_s: float = 4.0,
+                 planning_interval_s: float = 0.5):
         """
         Initializes and loads the specified model and its preprocessor/tokenizer.
 
@@ -132,6 +152,7 @@ class RecogDriveBackbone(nn.Module):
         self.model_type = model_type.lower()
         self.device = device
         self.max_length = max_length
+        self.system_prompt = planning_system_prompt(planning_horizon_s, planning_interval_s)
 
         print(f"Initializing backbone of type: '{self.model_type}' from path: '{checkpoint_path}'")
 
@@ -266,7 +287,7 @@ class RecogDriveBackbone(nn.Module):
 
     def configure_internvl(self):
         """Applies specific configurations required for the InternVL model."""
-        self.model.system_message = system_message
+        self.model.system_message = self.system_prompt
         self.img_context_token_id = self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
         self.model.img_context_token_id = self.img_context_token_id
         print("InternVL model configured.")
@@ -291,7 +312,7 @@ class RecogDriveBackbone(nn.Module):
                 question = '<image>\n' + question
             
             # InternVL2.5's chat template (FastChat-style conversation "internvl2_5")
-            query = (f"<|im_start|>system\n{system_message}<|im_end|>\n<|im_start|>user\n{question}<|im_end|>\n"
+            query = (f"<|im_start|>system\n{self.system_prompt}<|im_end|>\n<|im_start|>user\n{question}<|im_end|>\n"
                      "<|im_start|>assistant\n")
 
             for _ in range(query.count('<image>')):
@@ -333,7 +354,7 @@ class RecogDriveBackbone(nn.Module):
         for image_path, question in zip(image_paths, questions):
             paths = [image_path] if isinstance(image_path, (str, Image.Image)) else list(image_path)
             messages_batch.append([
-                {"role": "system", "content": system_message},
+                {"role": "system", "content": self.system_prompt},
                 {
                     "role": "user",
                     "content": [

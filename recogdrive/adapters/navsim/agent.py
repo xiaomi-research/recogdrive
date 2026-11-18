@@ -192,6 +192,9 @@ class ReCogDriveAgent(AbstractAgent):
                 waymo_reward = WaymoRFSReward(grpo_reward_cache_path, grpo_reward_split, dev_rfs=grpo_waymo_dev_rfs)
             else:
                 waymo_reward = WaymoADEReward(grpo_reward_cache_path, grpo_reward_split)
+        if cache_hidden_state and (trajectory_sampling.num_poses != 8 or trajectory_sampling.interval_length != 0.5):
+            raise ValueError("Hidden-state caches use the 4 s prompt with eight 0.5 s poses. "
+                             "Set cache_hidden_state=False for other horizons or intervals.")
         self.backbone = None
         self.metric_cache_path = metric_cache_path
         self.reference_policy_checkpoint = reference_policy_checkpoint
@@ -241,6 +244,8 @@ class ReCogDriveAgent(AbstractAgent):
                 checkpoint_path=self.vlm_path,
                 device=device,
                 max_length=vlm_max_length or (8704 if self.cameras else 2800),
+                planning_horizon_s=trajectory_sampling.time_horizon,
+                planning_interval_s=trajectory_sampling.interval_length,
             )
             if lora_rank:
                 self.backbone.add_lora(lora_rank, lora_alpha, lora_dropout, lora_targets)

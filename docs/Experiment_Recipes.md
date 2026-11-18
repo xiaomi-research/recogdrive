@@ -98,6 +98,6 @@ bash scripts/train/run_recogdrive_physicalai_il.sh "${LORA128[@]}"
 
 For Exp1/2 RL use `FROZEN`, the front cache, and that experiment's sampler. For Exp3 RL use `LORA128` with the front cache. In each case supply the corresponding IL checkpoint and a distinct experiment name and log. Plan the RL batch size separately from the single-card IL check.
 
-Waymo and PhysicalAI use 5-second targets. Validate the action normalization against the 5-second trajectories and reuse it for training and evaluation. For Waymo, the paired multi-view IL and `WAYMO_DEV_RFS_RL=1` commands share the same model settings. RFS on the same official val used for RL is a development-set result. [Waymo IL and RL](Waymo_RL.md)
+Waymo and PhysicalAI use 5-second targets with online image encoding (`CACHE_HIDDEN_STATE=False`). Validate the action normalization against the 5-second trajectories and reuse it for training and evaluation. For Waymo, the paired multi-view IL and `WAYMO_DEV_RFS_RL=1` commands share the same model settings. RFS on the same official val used for RL is a development-set result. [Waymo IL and RL](Waymo_RL.md)
 
 Run HUGSIM with the matching saved Hydra config and trained checkpoint, the official simulator environment, and scene assets. [Closed-loop evaluation](Closedloop_Evaluation.md)
