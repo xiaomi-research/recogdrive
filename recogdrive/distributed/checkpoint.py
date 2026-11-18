@@ -27,6 +27,15 @@ def canonical(name: str) -> str:
     return name[len("module."):] if name.startswith("module.") else name
 
 
+def clear_state_dict_cache() -> None:
+    from torch.distributed.checkpoint import state_dict
+
+    # Torch 2.6's name cache holds models, including their FSDP CUDA shards.
+    clear = getattr(getattr(state_dict, "_get_fqns", None), "cache_clear", None)
+    if callable(clear):
+        clear()
+
+
 def export_model_state(model: nn.Module) -> Dict[str, torch.Tensor]:
     """Full, unsharded weights on rank 0 (CPU); empty dict elsewhere. Collective."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict

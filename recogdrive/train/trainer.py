@@ -22,6 +22,7 @@ from omegaconf import DictConfig
 from recogdrive.adapters import check_policy
 from recogdrive.data import DevicePrefetcher, build_split, import_plugins, loader_name, make_loader
 from recogdrive.distributed import DistributedContext, ResumeCheckpointer, export_model_state, gradient_sync, parallelize
+from recogdrive.distributed.checkpoint import clear_state_dict_cache
 from recogdrive.eval import build_evaluators
 from recogdrive.train.args import TrainArgs
 from recogdrive.train.ema import EMA
@@ -212,6 +213,7 @@ class Trainer:
                 logger.exception("could not close training monitor after training failed")
             raise
         finally:
+            clear_state_dict_cache()
             if owns_signal_handler:
                 signal.signal(signal.SIGTERM, previous_sigterm)
 
@@ -784,9 +786,10 @@ class Trainer:
         final = best if best.is_file() else self.output_dir / f"last{suffix}.ckpt"
         # Release the GPUs before the final evaluation runs in its own processes. torch internals behind the
         # compiled blocks keep references to the weights, so their storage is dropped explicitly; FSDP2 shards
-        # (DTensor) go with their modules.
+        # (DTensor) go with their modules. CPU tensors use ordinary lifetime management:
+        # retained autograd/checkpoint references must keep their parameter storage valid.
         for tensor in [*self.agent.parameters(), *self.agent.buffers()]:
-            if not hasattr(tensor, "to_local"):
+            if tensor.device.type == "cuda" and not hasattr(tensor, "to_local"):
                 tensor.data = torch.empty(0, dtype=tensor.dtype, device=tensor.device)
         self.model = self.optimizer = self.lr_scheduler = self.ema = None
         self.agent = None
@@ -794,6 +797,7 @@ class Trainer:
         self.train_loader = self.val_loader = None
         for evaluator in self.evaluators:
             evaluator.release()
+        clear_state_dict_cache()
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

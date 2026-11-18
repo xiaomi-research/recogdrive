@@ -5,12 +5,15 @@ from unittest.mock import Mock
 import os
 import sys
 import time
+import weakref
 
 import pytest
+import torch
 from torch import nn
 from omegaconf import OmegaConf
 
 from recogdrive.eval.registry import SubprocessEvaluator
+from recogdrive.distributed.checkpoint import export_model_state
 from recogdrive.train.trainer import Trainer
 from recogdrive.models.recogdrive.diffusion_planner import GRPOConfig
 
@@ -18,6 +21,47 @@ from recogdrive.models.recogdrive.diffusion_planner import GRPOConfig
 def test_single_candidate_cannot_produce_group_relative_advantages():
     with pytest.raises(ValueError, match="at least 2"):
         GRPOConfig(sample_time=1)
+
+
+def test_cpu_finish_preserves_parameter_and_buffer_storage_held_by_callers(tmp_path):
+    trainer = Trainer.__new__(Trainer)
+    trainer.output_dir = tmp_path
+    model = nn.Linear(2, 1)
+    model.register_buffer("retained", torch.arange(3.0))
+    before = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+    trainer.agent, trainer.ema = model, None
+    trainer.ckpt_suffixes = lambda: [""]
+    trainer.ctx = SimpleNamespace(is_main=True, close=Mock())
+    trainer.monitor = SimpleNamespace(close=Mock())
+    trainer.evaluators, trainer.evaluation_errors = [], []
+    trainer.finish()
+    assert trainer.agent is None and trainer.optimizer is None
+    trainer.ctx.close.assert_called_once()
+    trainer.monitor.close.assert_called_once()
+    for name, tensor in model.state_dict().items():
+        torch.testing.assert_close(tensor, before[name], rtol=0, atol=0)
+
+
+def test_finish_drops_checkpoint_cached_model_before_final_evaluation(tmp_path):
+    trainer = Trainer.__new__(Trainer)
+    trainer.output_dir = tmp_path
+    model = nn.Linear(2, 1)
+    reference = weakref.ref(model)
+    export_model_state(model)
+    trainer.agent, trainer.model, trainer.ema = model, model, None
+    del model
+    trainer.ckpt_suffixes = lambda: [""]
+    trainer.ctx = SimpleNamespace(is_main=True, close=Mock())
+    trainer.monitor = SimpleNamespace(close=Mock())
+    trainer.evaluation_errors = []
+    trainer.report = Mock()
+
+    def check_released(checkpoint):
+        assert reference() is None
+        return []
+
+    trainer.evaluators = [SimpleNamespace(benchmark="memory", release=Mock(), finish=check_released)]
+    trainer.finish()
 
 
 def test_cancel_reaps_its_owned_parent_and_child_group(tmp_path):
