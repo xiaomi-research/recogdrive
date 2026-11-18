@@ -34,14 +34,36 @@ Sources: [Waymo's released per-frame RFS implementation](https://github.com/waym
 
 ### Explicit RFS development experiment on official val (473)
 
-Convert the official `val` TFRecords into the `val` cache, with all views if using the multi-view recipe. Stage 3 samples only frames with cached rater feedback and uses their RFS as the RL reward. Start from the matching 5-second Stage 2 checkpoint and use the same backbone, action normalization and camera settings. For the multi-view Qwen recipe:
+Convert the public training and official validation TFRecords with all views, then run 5-second IL on `training`. Use the same Bash session for both stages so they share the model, camera, LoRA, and sampling settings. Add any action-normalization overrides to the shared arguments.
 
 ```bash
-WAYMO_DEV_RFS_RL=1 STAGE2_CHECKPOINT=/path/to/waymo_stage2_5s_qwenvl3.ckpt \
-WAYMOE2E_CACHE_PATH=/path/to/waymoe2e_recogdrive_cache \
-MODEL_FAMILY=qwenvl3 VLM_PATH=/path/to/UniDriveVLA_Stage1 GPUS=4 \
+export WAYMOE2E_CACHE_PATH=/path/to/waymo_multi_view_cache
+PYTHONPATH=navsim1.1:. python -m recogdrive.data.waymoe2e \
+  --out "$WAYMOE2E_CACHE_PATH" --split training --views all /path/to/wod_e2e/training_*.tfrecord-*
+PYTHONPATH=navsim1.1:. python -m recogdrive.data.waymoe2e \
+  --out "$WAYMOE2E_CACHE_PATH" --split val --views all /path/to/wod_e2e/val_*.tfrecord-*
+
+export NAVSIM_TREE=1.1 MODEL_FAMILY=qwenvl3 OPTIMIZER_TYPE=muon CACHE_HIDDEN_STATE=False GPUS=4
+export VLM_PATH=/path/to/UniDriveVLA_Nusc_Base_Stage1
+export CACHE_PATH="$WAYMOE2E_CACHE_PATH"
+export SAMPLING_METHOD=ddim  # Use the same selected sampler for both stages.
+WAYMO_ARGS=(agent.cam_type=multi agent.vlm_max_length=8704 agent.lora_rank=128
+            agent.lora_alpha=16 train.ema_decay=0.999 'train.replicate_frozen=[]'
+            agent.trajectory_sampling.time_horizon=5)
+
+WAYMOE2E_TRAIN_SPLIT=training WAYMOE2E_VAL_SPLIT=val MAX_EPOCHS=30 \
+EXPERIMENT_NAME=exp5_waymo_il LOG_FILE=exp5_waymo_il.log \
+bash scripts/train/run_recogdrive_waymoe2e_stage2_il.sh "${WAYMO_ARGS[@]}" evaluator.name=waymoe2e
+```
+
+Set `STAGE2_CHECKPOINT` to the checkpoint from that IL run. Stage 3 uses RFS from the labelled validation frames.
+
+```bash
+WAYMO_DEV_RFS_RL=1 WAYMOE2E_TRAIN_SPLIT=val WAYMOE2E_VAL_SPLIT=val WAYMO_GRPO_REWARD=waymo_rfs \
+STAGE2_CHECKPOINT=/path/to/waymo_stage2_5s_qwenvl3.ckpt \
+EXPERIMENT_NAME=exp5_waymo_val_rfs_rl LOG_FILE=exp5_waymo_val_rfs_rl.log \
 bash scripts/train/run_recogdrive_waymoe2e_stage3_rl.sh \
-  agent.cam_type=multi agent.vlm_max_length=8704
+  "${WAYMO_ARGS[@]}"
 ```
 
 This switch selects `val` and `waymo_rfs` for training, enables the Waymo evaluator on `val`, and skips the ordinary validation loss. Final metrics are written under `eval/waymoe2e/final/waymoe2e_dev_metrics.json` with keys such as `dev_rfs`. Scores on this split after RL are development-set results; use separate, unseen data for an independent evaluation. The switch does not permit `test` or other held-out splits as training inputs.

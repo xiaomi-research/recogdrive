@@ -1,5 +1,7 @@
 # ReCogDrive Training and Evaluation
 
+For the NAVSIM Exp1-5, Waymo, and PhysicalAI configurations, see [Experiment Recipes](Experiment_Recipes.md).
+
 ## Stage 1: Vision-Language Models Driving Pretraining
 
 First, you need to download **13 QA datasets** (e.g., *DriveLM*, *LingoQA*, etc.) as mentioned in the paper.  
@@ -129,7 +131,7 @@ PhysicalAI-AV (`nvidia/PhysicalAI-Autonomous-Vehicles`) is gated by the NVIDIA A
 
 Training-split augmentation is off by default: `augment.history_dropout` and `augment.ego_status_dropout` zero the ego history / velocity and acceleration with the given probability (before the prompt is built), and `augment.color_jitter.p` (with `brightness`, `contrast`, `saturation`, `hue`), `augment.grayscale_p` and `augment.blur_p` are photometric image augmentations; geometric ones would move the scene against the labels.
 
-**Horizon and camera views.** `agent.trajectory_sampling.time_horizon` sets the prediction horizon (4 s = 8 poses by default, 5 s for the WOD-E2E metrics) and every data source cuts its targets to it. For 5 s waypoint training, derive `agent.action_norm_min` / `agent.action_norm_max` from the training split and pass the same bounds to stage 2 and stage 3; the planner's default forward range is 65 m, so check it against the actual target distribution. `agent.cam_type=multi` feeds every surround view the source has (`agent.cameras` selects them), the front view rescaled to a 960-pixel short side and the others to 480; the padded prompt length `agent.vlm_max_length` defaults to 8704 for multi-view (WOD-E2E's 8 views take about 8240 tokens, nuScenes' 6 about 6450) and stays 2800 for the single-view recipe. NAVSIM multi-view reads scenes, or a cache rebuilt with `agent.cam_type=multi`; WOD-E2E needs a cache converted with `--views all`.
+**Horizon and camera views.** `agent.trajectory_sampling.time_horizon` sets the prediction horizon (4 s = 8 poses by default, 5 s for WOD-E2E). For 5 s waypoint training, derive `agent.action_norm_min` and `agent.action_norm_max` from the training split and use the same bounds in stages 2 and 3. The planner's default forward range is 65 m. `agent.cam_type=multi` feeds the available surround views, with optional selection by `agent.cameras`. On published commit `f257fe7`, InternVL resizes the front view's short side to 960 pixels and the others to 480 by default. Its padded prompt length defaults to 8704 for multi-view and 2800 for single-view. Qwen uses its native processor sizing on that commit. To train from a multi-view cache, rebuild the NAVSIM cache with `agent.cam_type=multi` or convert the WOD-E2E cache with `--views all`.
 
 **Benchmarks.** `evaluator.name` takes one benchmark or a list, `evaluator.<name>.*` overrides the shared keys for one of them, and results go to `eval/<benchmark>/<tag>/` and into the metrics as `eval/<benchmark>/<metric>`.
 
@@ -191,7 +193,7 @@ VLM_PATH=/path/to/internvl3_or_qwenvl3 \
 bash scripts/train/run_recogdrive_waymoe2e_stage2_il.sh agent.trajectory_sampling.time_horizon=5
 ```
 
-WaymoE2E supports stage 2 imitation learning and explicit stage 3 GRPO rewards. The stage 3 launcher selects `waymo_ade` by default: negative mean XY waypoint error over the logged 5-second training future. This is a research reward, not official RFS. `WAYMO_GRPO_REWARD=waymo_rfs` explicitly selects per-frame RFS and requires separately supplied training rater labels; the public validation labels are not used for training. Both modes require the same 5-second stage-2 model and training-cache root/split. Open-loop evaluation reports frame-level RFS/ADE; official scenario-cluster `average_score` requires official category metadata or the evaluation server. See [Waymo RL](Waymo_RL.md).
+WaymoE2E supports 5-second stage-2 IL and stage-3 GRPO from a matching IL checkpoint. The default `waymo_ade` reward uses negative mean XY waypoint error over the logged training future. Separate rater-labelled training data enables `waymo_rfs` on that training split. For the development experiment, set `WAYMO_DEV_RFS_RL=1` to train with official `val` RFS and report the same split as a development-set result. Open-loop evaluation reports frame-level RFS/ADE. The official scenario-cluster `average_score` requires official category metadata or the evaluation server. [Waymo IL and RL commands](Waymo_RL.md)
 
 ```bash
 STAGE2_CHECKPOINT=/path/to/waymo_stage2_5s.ckpt \
