@@ -15,6 +15,7 @@ Reads ``OPENAI_API_KEY``, ``OPENAI_BASE_URL``, and optional ``COGNITIVE_VLM_MODE
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -22,6 +23,7 @@ import math
 import os
 import random
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -204,12 +206,22 @@ async def infer(query, img_file):
 
 
 async def vlm_qa(kind, token, image, question, drop_if=None):
-    answer = read_text(kind, token)
+    cache_token = token
+    if _cache_dir is not None:
+        identity = {
+            "question": question,
+            "image": hashlib.sha256(Path(image).read_bytes()).hexdigest(),
+            "model": await model_id(),
+            "endpoint": os.environ.get("OPENAI_BASE_URL"),
+        }
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+        cache_token = f"{token}.{digest}"
+    answer = read_text(kind, cache_token)
     if answer is None:
         answer = await infer(question, image)
         if not isinstance(answer, str) or not answer.strip():
             return None, None
-        write_text(kind, token, answer)
+        write_text(kind, cache_token, answer)
     if drop_if is not None and drop_if(answer):
         return None, None
     return question, answer
@@ -1055,7 +1067,19 @@ def seed_all(seed):
 
 async def generate(cfg, jsonl_path, cache, split, cam_type, prompt_type, traj_dir, batch_size):
     global _cache_dir, _traj_dir
-    _cache_dir = cache
+    from omegaconf import OmegaConf
+
+    source = {}
+    for key in ("navsim_log_path", "sensor_blobs_path", "synthetic_scenes_path", "synthetic_sensor_path",
+                "train_test_split", "train_logs", "val_logs", "seed"):
+        value = OmegaConf.select(cfg, key)
+        source[key] = OmegaConf.to_container(value, resolve=True) if OmegaConf.is_config(value) else value
+    # Output timestamps and unrelated optimizer settings must not invalidate reusable annotations.
+    identity = {"schema": 3, "source": source, "split": split,
+                "cam_type": cam_type, "prompt_type": prompt_type,
+                "traj_dir": str(Path(traj_dir).resolve()) if traj_dir else None}
+    namespace = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+    _cache_dir = Path(cache) / namespace
     _traj_dir = str(traj_dir) if traj_dir else None
     check_heuristics()
     seed_all(int(getattr(cfg, "seed", 0) or 0))
@@ -1071,7 +1095,10 @@ async def generate(cfg, jsonl_path, cache, split, cam_type, prompt_type, traj_di
             return items
     written = 0
     loaded = False
-    with jsonl_path.open("w", encoding="utf-8") as handle:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=jsonl_path.parent,
+                                     prefix=jsonl_path.name + ".", suffix=".partial", delete=False) as handle:
+        partial = Path(handle.name)
+        logger.info("writing temporary dataset %s", partial)
         for start in tqdm(range(0, len(tokens), batch_size), desc="cognitive-vqa"):
             samples = []
             for offset, token in enumerate(tokens[start:start + batch_size]):
@@ -1106,6 +1133,9 @@ async def generate(cfg, jsonl_path, cache, split, cam_type, prompt_type, traj_di
                 written += 1
             if failed is not None:
                 raise failed
+    if not written:
+        raise RuntimeError(f"no valid cognitive VQA records; previous output preserved (partial: {partial})")
+    partial.replace(jsonl_path)
     logger.info("wrote %d records to %s (cache %s)", written, jsonl_path, cache)
     return written
 

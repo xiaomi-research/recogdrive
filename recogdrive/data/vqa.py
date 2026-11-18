@@ -33,9 +33,25 @@ class VQADataset(Dataset):
                     images = [images]
                 if not isinstance(images, list) or not images or not all(isinstance(p, str) and p for p in images):
                     raise ValueError(f"VQA JSONL row {line_number} needs image, image_path, images, or image_paths")
-                question, answer = row.get("question"), row.get("answer")
-                if not isinstance(question, str) or not question.strip() or not isinstance(answer, str) or not answer.strip():
-                    raise ValueError(f"VQA JSONL row {line_number} needs non-empty string question and answer")
+                pairs = [(row.get("question"), row.get("answer"))]
+                conversations = row.get("conversations")
+                use_conversations = "question" not in row and "answer" not in row and conversations is not None
+                if use_conversations:
+                    if not isinstance(conversations, list) or not conversations or len(conversations) % 2:
+                        raise ValueError(f"VQA JSONL row {line_number} needs complete human/gpt conversation pairs")
+                    pairs = []
+                    for index in range(0, len(conversations), 2):
+                        human, assistant = conversations[index:index + 2]
+                        if (not isinstance(human, dict) or not isinstance(assistant, dict)
+                                or human.get("from") != "human" or assistant.get("from") != "gpt"):
+                            raise ValueError(f"VQA JSONL row {line_number} needs alternating human/gpt turns")
+                        question = human.get("value")
+                        if isinstance(question, str):
+                            question = question.replace("<image>", "").strip()
+                        pairs.append((question, assistant.get("value")))
+                for question, answer in pairs:
+                    if not isinstance(question, str) or not question.strip() or not isinstance(answer, str) or not answer.strip():
+                        raise ValueError(f"VQA JSONL row {line_number} needs non-empty string question and answer")
                 paths = []
                 for image in images:
                     image_path = Path(image).expanduser()
@@ -45,7 +61,11 @@ class VQADataset(Dataset):
                     except ValueError as exc:
                         raise ValueError(f"VQA image path escapes vqa.image_root: {image_path}") from exc
                     paths.append(str(image_path))
-                self.samples.append((str(row.get("id", line_number)), paths, question, answer))
+                token = str(row.get("id", line_number))
+                for index, (question, answer) in enumerate(pairs):
+                    # Cognitive turns are self-contained questions sharing the scene's images.
+                    turn_token = f"{token}:{index}" if use_conversations else token
+                    self.samples.append((turn_token, paths, question, answer))
         if not self.samples:
             raise ValueError(f"No VQA examples found in {self.path}")
 

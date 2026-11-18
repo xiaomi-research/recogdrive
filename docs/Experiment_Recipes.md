@@ -102,3 +102,13 @@ For Exp1/2 RL use `FROZEN`, the front cache, and that experiment's sampler. For 
 Waymo and PhysicalAI use 5-second targets with online image encoding (`CACHE_HIDDEN_STATE=False`). Validate the action normalization against the 5-second trajectories and reuse it for training and evaluation. For Waymo, the paired multi-view IL and `WAYMO_DEV_RFS_RL=1` commands share the same model settings. RFS on the same official val used for RL is a development-set result. [Waymo IL and RL](Waymo_RL.md)
 
 Run HUGSIM with the matching saved Hydra config and trained checkpoint, the official simulator environment, and scene assets. [Closed-loop evaluation](Closedloop_Evaluation.md)
+
+## Cognitive VQA records and caches
+
+`recogdrive.data.vqa` now accepts both flat `{images, question, answer}` JSONL and the cognitive generator's `{image, conversations}` records. Alternating human/gpt pairs become independent training examples sharing the scene's images, with IDs `<scene-id>:<turn>`. Questions must be self-contained; full conversational-history supervision is not implemented. Image placeholders are supplied by preprocessing, so existing `<image>` placeholders are removed from conversation questions.
+
+Caches are namespaced by resolved data-source configuration, split, view and prompt settings; output timestamps do not invalidate annotations. VLM answers additionally include the question, image bytes, endpoint and model ID in their cache identity. Legacy token-only VLM caches are not reused. If an endpoint replaces weights under the same model ID, use a new model ID or a new output/cache directory. Run one generation job per shared cache/output directory; parallel jobs need separate directories.
+
+Generation writes a unique `.partial` file and atomically replaces the final JSONL only after a successful nonempty run. On failure the previous dataset is preserved; the logged partial path remains for diagnosis. Real automatic annotation still requires a working VLM endpoint; mocked API checks are not real annotations.
+
+For generated single/multi_5 records, set `VQA_IMAGE_ROOT` (or `vqa.image_root`) to the dataset directory containing the referenced raw images. The default root is the JSONL directory and deliberately rejects paths outside it. Stitched multi_3 records reference generated cache images, so use their output directory as the image root. Generate train/val into separate JSONL files; the VQA/planning launcher requires both files and preserves their split boundaries.
