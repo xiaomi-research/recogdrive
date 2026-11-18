@@ -12,6 +12,7 @@ y forward), as its LTF client sends NAVSIM trajectories; its iLQR controller tra
 
 import os
 import pickle
+import stat
 from pathlib import Path
 
 import numpy as np
@@ -41,10 +42,24 @@ def serve(driver, port: int, cfg) -> None:
             os.mkfifo(pipe)
         except FileExistsError:  # the simulator made it first
             pass
+        if not stat.S_ISFIFO(pipe.lstat().st_mode):
+            raise ValueError(f"HUGSIM pipe is not a FIFO: {pipe}")
     while True:
         with open(obs_pipe, "rb") as f:
-            message = pickle.loads(f.read())
-        if isinstance(message, str):  # 'Done'
-            return
+            payload = f.read()
+        try:
+            message = pickle.loads(payload)
+            if isinstance(message, str):  # 'Done'
+                return
+            trajectory = plan(driver, *message)
+        except Exception:
+            # The official simulator accepts None when its policy fails; never block reporting an error.
+            try:
+                descriptor = os.open(plan_pipe, os.O_WRONLY | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "wb") as f:
+                    pickle.dump(None, f)
+            except OSError:
+                pass
+            raise
         with open(plan_pipe, "wb") as f:
-            f.write(pickle.dumps(plan(driver, *message)))
+            pickle.dump(trajectory, f)

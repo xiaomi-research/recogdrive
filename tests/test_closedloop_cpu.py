@@ -4,8 +4,11 @@ import base64
 import io
 import json
 import os
+import errno
+import pickle
 import socket
 import threading
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -23,6 +26,7 @@ from recogdrive.adapters.template import EgoMLPPolicy
 from recogdrive.closedloop import COMMANDS, Driver
 from recogdrive.closedloop import neuroncap
 from recogdrive.data.nuscenes import CAMERAS, NuScenesDataset
+from recogdrive.eval.registry import SubprocessEvaluator
 
 ROOT = os.environ.get("NUSCENES_ROOT", "/data/yongkangli/datasets/nuscenes")
 
@@ -143,6 +147,83 @@ def main():
     check_features(dataset, driver)
     check_neuroncap(dataset, driver)
     check_tiles(dataset)
+
+
+def test_qwen_accepts_one_rendered_pil_image(monkeypatch):
+    from types import SimpleNamespace
+
+    from transformers.feature_extraction_utils import BatchFeature
+
+    from recogdrive.models.recogdrive import backbone
+
+    rendered = Image.new("RGB", (32, 18), "white")
+
+    def process(messages):
+        assert messages[1]["content"][0]["image"] is rendered
+        return [rendered], None
+
+    class Processor:
+        def apply_chat_template(self, *args, **kwargs):
+            return "question"
+
+        def __call__(self, *, images, **kwargs):
+            assert images == [rendered]
+            return BatchFeature({"input_ids": torch.ones(1, 4, dtype=torch.long)})
+
+    hidden = torch.zeros(1, 4, 8)
+    policy = SimpleNamespace(device="cpu", tokenizer=Processor(), system_prompt=backbone.system_message,
+                             qwen_max_input_tokens=None,
+                             model=lambda **kwargs: SimpleNamespace(hidden_states=[hidden]))
+    monkeypatch.setattr(backbone, "process_vision_info", process)
+    assert backbone.RecogDriveBackbone.forward_qwen(policy, [rendered], ["Q?"]) is hidden
+
+
+@pytest.mark.skipif(os.name != "posix", reason="HUGSIM uses POSIX FIFOs")
+@pytest.mark.parametrize("simulator_reader", [True, False])
+def test_hugsim_policy_failure_notifies_reader_and_never_blocks(tmp_path, simulator_reader):
+    obs_pipe, plan_pipe = tmp_path / "obs_pipe", tmp_path / "plan_pipe"
+    os.mkfifo(obs_pipe)
+    os.mkfifo(plan_pipe)
+    reader = os.open(plan_pipe, os.O_RDONLY | os.O_NONBLOCK) if simulator_reader else None
+    code = (
+        "import sys\nfrom types import SimpleNamespace\nfrom recogdrive.closedloop import hugsim\n"
+        "def fail(*args): raise RuntimeError('expected policy failure')\n"
+        "hugsim.plan=fail\nhugsim.serve(object(),0,SimpleNamespace(output_dir=sys.argv[1]))\n"
+    )
+    evaluator = SubprocessEvaluator(OmegaConf.create({}), OmegaConf.create({}), tmp_path)
+    try:
+        evaluator.launch([sys.executable, "-c", code, str(tmp_path)], tmp_path, "client", os.environ.copy())
+        process = evaluator.jobs[0][1]
+        deadline = time.monotonic() + 20
+        while True:
+            try:
+                writer = os.open(obs_pipe, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as exc:
+                assert exc.errno == errno.ENXIO
+                assert process.poll() is None and time.monotonic() < deadline
+                time.sleep(0.02)
+        with os.fdopen(writer, "wb") as stream:
+            pickle.dump(({}, {}), stream)
+        assert process.wait(timeout=20) != 0
+        assert "expected policy failure" in (tmp_path / "eval.log").read_text()
+        if reader is not None:
+            assert pickle.loads(os.read(reader, 4096)) is None
+    finally:
+        if reader is not None:
+            os.close(reader)
+        evaluator.cancel()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="HUGSIM uses POSIX FIFOs")
+def test_hugsim_refuses_existing_regular_file_without_overwriting(tmp_path):
+    from recogdrive.closedloop import hugsim
+
+    existing = tmp_path / "obs_pipe"
+    existing.write_bytes(b"preserve this file")
+    with pytest.raises(ValueError, match="not a FIFO"):
+        hugsim.serve(object(), 0, type("Config", (), {"output_dir": str(tmp_path)})())
+    assert existing.read_bytes() == b"preserve this file"
 
 
 def test_closedloop_cpu_on_nuscenes_mini():

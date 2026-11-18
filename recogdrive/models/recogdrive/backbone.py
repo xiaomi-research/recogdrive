@@ -3,6 +3,7 @@ import types
 import torch
 from torch import nn
 import torch.nn.functional as F
+from PIL import Image
 from transformers import AutoConfig, AutoModel, AutoProcessor, AutoTokenizer
 
 try:
@@ -298,15 +299,15 @@ class RecogDriveBackbone(nn.Module):
             inputs_embeds=embeds, attention_mask=attention_mask, position_ids=position_ids, use_cache=False,
         ).last_hidden_state
 
-    def forward_qwen(self, image_paths: Union[torch.Tensor, List[str]], questions: List[str]):
+    def forward_qwen(self, image_paths: List, questions: List[str]):
         if process_vision_info is None:
             raise ImportError("qwen_vl_utils is required for Qwen-VL preprocessing.")
         if not isinstance(image_paths, list):
-            raise TypeError("Qwen-VL backbone expects image_paths as a list of file paths.")
+            raise TypeError("Qwen-VL backbone expects a list of samples containing paths or PIL images.")
 
         messages_batch = []
         for image_path, question in zip(image_paths, questions):
-            paths = [image_path] if isinstance(image_path, str) else list(image_path)
+            paths = [image_path] if isinstance(image_path, (str, Image.Image)) else list(image_path)
             messages_batch.append([
                 {"role": "system", "content": system_message},
                 {
