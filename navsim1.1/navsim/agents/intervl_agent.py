@@ -1,6 +1,5 @@
 
 import os
-import re
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Union
 
@@ -34,6 +33,7 @@ from navsim.planning.training.abstract_feature_target_builder import (
     AbstractTargetBuilder,
 )
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
+from recogdrive.trajectory_text import parse_trajectory_text
 
 system_message = """
 You are a vehicle trajectory prediction model for autonomous driving. Your task is to predict the ego vehicle's 4-second trajectory based on the following inputs: multi-view images from 8 cameras, ego vehicle states (position), and discrete navigation commands. The input provides a 2-second history, and your output should ensure a safe trajectory for the next 4 seconds. Your predictions must adhere to the following metrics:
@@ -216,14 +216,10 @@ class InternVLAgent(AbstractAgent):
         responses = self.pipe(prompts, gen_config=generation_config)
 
         answers = [response.text for response in responses]
-
-        full_match = re.search(r'\[PT(?:, )?((?:\([-+]?\d*\.\d+, [-+]?\d*\.\d+, [-+]?\d*\.\d+\)(?:, )?){8})\]', answers[0])
-        if full_match:
-            coords_matches = re.findall(r'\(([-+]?\d*\.\d+), ([-+]?\d*\.\d+), ([-+]?\d*\.\d+)\)', full_match.group(1))
-            if len(coords_matches) == 8:
-                coordinates = [tuple(map(float, coord)) for coord in coords_matches]
-                coordinates_array = np.array(coordinates, dtype=np.float32)
-                return {"trajectory": coordinates_array.reshape(1, self._trajectory_sampling.num_poses, 3)}
+        answer = answers[0] if answers else ""
+        coordinates = parse_trajectory_text(answer, self._trajectory_sampling.num_poses)
+        if coordinates is not None:
+            return {"trajectory": coordinates[None]}
 
         print("Error parsing trajectory, returning zeros:", answer)
         return {"trajectory": np.zeros((1, self._trajectory_sampling.num_poses, 3), dtype=np.float32)}
