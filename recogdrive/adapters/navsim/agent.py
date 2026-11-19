@@ -355,6 +355,16 @@ class ReCogDriveAgent(AbstractAgent):
                 k2 = k[len("agent."):] if k.startswith("agent.") else k
                 if k2 in model_dict and v.shape == model_dict[k2].shape:
                     filtered_ckpt[k2] = v
+            missing_planner = [
+                name for name, parameter in self.named_parameters()
+                if name.startswith("action_head.") and parameter.requires_grad and name not in filtered_ckpt
+            ]
+            if missing_planner:
+                raise ValueError(
+                    f"Planner checkpoint {self.checkpoint_path} has missing or incompatible weights "
+                    f"({len(missing_planner)} tensors, including {missing_planner[:3]}). "
+                    "Check dit_type, VLM size and trajectory sampling against the training config."
+                )
             self.load_state_dict(filtered_ckpt, strict=False)
             print(f"Loaded {len(filtered_ckpt)} of {len(ckpt)} checkpoint tensors from {self.checkpoint_path}")
 

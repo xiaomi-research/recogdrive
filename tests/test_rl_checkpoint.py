@@ -3,6 +3,7 @@
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
 import torch
 import torch.distributed as dist
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
@@ -12,6 +13,26 @@ from recogdrive.adapters.navsim.agent import ReCogDriveAgent
 from recogdrive.distributed.checkpoint import export_model_state
 from recogdrive.infer import load_weights, vlm_export_path
 from recogdrive.train.trainer import Trainer
+
+
+def test_initialize_rejects_wrong_planner_size_before_changing_weights(tmp_path):
+    agent = torch.nn.Module()
+    agent.action_head = torch.nn.Linear(3, 2)
+    agent.backbone = torch.nn.Linear(2, 2).requires_grad_(False)
+    agent.checkpoint_path = tmp_path / "planner.ckpt"
+    before = agent.action_head.bias.detach().clone()
+    state = {"agent.action_head.weight": torch.ones(2, 1),
+             "agent.action_head.bias": torch.full((2,), 7.0)}
+    torch.save({"state_dict": state}, agent.checkpoint_path)
+    with pytest.raises(ValueError, match="missing or incompatible weights.*action_head.weight"):
+        ReCogDriveAgent.initialize(agent)
+    torch.testing.assert_close(agent.action_head.bias, before, rtol=0, atol=0)
+
+    state["agent.action_head.weight"] = torch.ones(2, 3)
+    torch.save({"state_dict": state}, agent.checkpoint_path)
+    ReCogDriveAgent.initialize(agent)
+    torch.testing.assert_close(agent.action_head.weight, state["agent.action_head.weight"], rtol=0, atol=0)
+    torch.testing.assert_close(agent.action_head.bias, state["agent.action_head.bias"], rtol=0, atol=0)
 
 
 def test_real_grpo_planner_checkpoint_loads_for_inference(tmp_path, monkeypatch):
