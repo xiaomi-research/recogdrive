@@ -15,6 +15,12 @@ def test_fixed_tiles_and_default_tiling(size, default_tiles):
     assert load_image(image).shape == (default_tiles, 3, 448, 448)
 
 
+def test_fixed_tile_budget_rejects_two_tiles():
+    image = Image.new("RGB", (16, 9))
+    with pytest.raises(ValueError, match="num_patches"):
+        load_image(image, num_patches=2)
+
+
 def test_exp4_uses_fixed_tiles_in_planning_and_vqa_and_rejects_missing_views(tmp_path):
     cameras = ["front", "front_left", "front_right", "left", "right", "back_left", "back_right", "back"]
     image = tmp_path / "view.jpg"

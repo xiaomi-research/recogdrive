@@ -33,6 +33,12 @@ def test_qwen_resize_keeps_the_right_view_and_survives_mixed_batches(tmp_path):
     assert batch["image_short_sides"] == [[None, 960], [None]]
 
 
+def test_qwen_resize_requires_one_size_per_camera():
+    image = Image.new("RGB", (16, 9))
+    with pytest.raises(ValueError, match="one image size per camera"):
+        backbone.qwen_image_content([image, image], [960])
+
+
 @pytest.mark.parametrize("opts,error", [
     ({"qwen_image_short_sides": [960]}, "two positive integers"),
     ({"qwen_image_short_sides": [960, -1]}, "two positive integers"),

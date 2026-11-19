@@ -2,6 +2,8 @@
 
 本文件逐项对应用户最初七项计划。实现、受控测试、真实资产实验分别记录；“代码已实现”不表示所有数据集正式成绩已经验收。唯一执行项目为当前 `recogdrive-1` / `update-cache`，未发布、commit或push，未修改用户 `ROADMAP.md` 或 UniDriveVLA。
 
+> 本页记录 2026-10-04 的历史验收，结果对应下节所列的源码快照。当前 Waymo 开发实验可显式设置 `WAYMO_DEV_RFS_RL=1`，使用官方 `val` 的 RFS 作为训练奖励。同一 `val` 上的分数标为开发集结果。见 [现行 Waymo 配方](Waymo_RL.md)。
+
 ## 源码版本与证据规则
 
 - main 数学基线：`d54404796de7a44ca418b96057e3f8c3de3e8c0d`。
