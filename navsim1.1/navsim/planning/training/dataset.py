@@ -17,6 +17,7 @@ from navsim.common.enums import BoundingBoxIndex, LidarIndex
 import numpy as np
 import math
 from navsim.visualization.camera import _transform_points_to_image, _rotation_3d_in_axis, _transform_annotations_to_camera
+from recogdrive.cache_io import dump_feature_target_to_pickle
 logger = logging.getLogger(__name__)
 
 
@@ -25,13 +26,6 @@ def load_feature_target_from_pickle(path: Path) -> Dict[str, torch.Tensor]:
     with gzip.open(path, "rb") as f:
         data_dict: Dict[str, torch.Tensor] = pickle.load(f)
     return data_dict
-
-
-def dump_feature_target_to_pickle(path: Path, data_dict: Dict[str, torch.Tensor]) -> None:
-    """Helper function to save feature/target to pickle."""
-    # Use compresslevel = 1 to compress the size but also has fast write and read.
-    with gzip.open(path, "wb", compresslevel=1) as f:
-        pickle.dump(data_dict, f)
 
 
 def transform_targets_after_load(
