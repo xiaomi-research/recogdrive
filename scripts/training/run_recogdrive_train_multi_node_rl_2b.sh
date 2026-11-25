@@ -33,6 +33,7 @@ torchrun \
     agent.vlm_path='/path/to/pretrain_model' \
     agent.cam_type='single' \
     agent.grpo=True \
+    "agent.grpo_bc_coeff=${GRPO_BC_COEFF:-0.1}" \
     agent.cache_hidden_state=True \
     agent.vlm_type="internvl" \
     agent.checkpoint_path="'$CHECKPOINT'" \

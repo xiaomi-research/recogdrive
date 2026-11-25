@@ -1,6 +1,5 @@
 
 import os
-import re
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Union
 
@@ -29,6 +28,7 @@ from navsim.common.dataclasses import (
     Trajectory,
 )
 from navsim.common.enums import BoundingBoxIndex, LidarIndex
+from navsim.agents.trajectory_text import parse_trajectory_text
 from navsim.planning.training.abstract_feature_target_builder import (
     AbstractFeatureBuilder,
     AbstractTargetBuilder,
@@ -215,18 +215,13 @@ class InternVLAgent(AbstractAgent):
         
         responses = self.pipe(prompts, gen_config=generation_config)
 
-        answers = [response.text for response in responses]
-
-        full_match = re.search(r'\[PT(?:, )?((?:\([-+]?\d*\.\d+, [-+]?\d*\.\d+, [-+]?\d*\.\d+\)(?:, )?){8})\]', answers[0])
-        if full_match:
-            coords_matches = re.findall(r'\(([-+]?\d*\.\d+), ([-+]?\d*\.\d+), ([-+]?\d*\.\d+)\)', full_match.group(1))
-            if len(coords_matches) == 8:
-                coordinates = [tuple(map(float, coord)) for coord in coords_matches]
-                coordinates_array = np.array(coordinates, dtype=np.float32)
-                return {"trajectory": coordinates_array.reshape(1, self._trajectory_sampling.num_poses, 3)}
-
-        print("Error parsing trajectory, returning zeros:", answer)
-        return {"trajectory": np.zeros((1, self._trajectory_sampling.num_poses, 3), dtype=np.float32)}
+        num_poses = self._trajectory_sampling.num_poses
+        answer = responses[0].text if responses else ""
+        poses = parse_trajectory_text(answer, num_poses)
+        if poses is None:
+            print("Error parsing trajectory, returning zeros:", answer)
+            poses = np.zeros((num_poses, 3), dtype=np.float32)
+        return {"trajectory": poses[None, ...]}
 
 
     def compute_trajectory(self, agent_input: AgentInput) -> Trajectory:

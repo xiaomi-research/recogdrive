@@ -31,4 +31,4 @@ torchrun \
     agent.cache_mode=True \
     train_test_split=$TRAIN_TEST_SPLIT \
     agent.vlm_path="/path/to/ReCogDrive_2b" \
-    cache_path=$CACHE_PATH  > caching_dataset.txt 2>&1
+    cache_path="$CACHE_PATH" "$@" > caching_dataset.txt 2>&1

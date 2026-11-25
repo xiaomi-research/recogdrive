@@ -19,4 +19,5 @@ reference_policy_checkpoint: ''
 vlm_size: 'small'
 train_backbone: false
 grpo: False
+grpo_bc_coeff: 0.1  # weight of the imitation term in DiffGRPO
 lr: 1e-4

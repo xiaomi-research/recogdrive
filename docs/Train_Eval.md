@@ -2,8 +2,7 @@
 
 ## Stage 1: Vision-Language Models Driving Pretraining
 
-First, you need to download **13 QA datasets** (e.g., *DriveLM*, *LingoQA*, etc.) as mentioned in the paper.  
-Due to dataset privacy policies, we are currently unable to release the JSON files. These files may be released later if permission is granted by the dataset authors. Once obtained, you should configure the corresponding JSON files under `./internvl_chat/shell/data_info`.
+The training annotations that have been released are in the [ReCogDrive pretraining collection](https://huggingface.co/datasets/owl10/ReCogDrive_Pretraining). Obtain the source images from the corresponding datasets and configure their paths under \`internvl_chat/shell/data_info\`. The collection contains training subsets. For validation or testing, use the splits supplied by each benchmark.
 
 You can also generate the **ReCogDrive dataset on NAVSIM** following the steps below:
 
@@ -23,9 +22,36 @@ You can launch the pretraining process with the following commands:
 
 ```bash
 cd /path/to/internvl_chat
-sh ./shell/internvl3.0/2nd_finetune/internvl3_8b_dynamic_res_2nd_finetune_recogdrive_pretrain.sh
+bash ./shell/internvl3.0/2nd_finetune/internvl3_8b_dynamic_res_2nd_finetune_recogdrive_pretrain.sh
 ```
 
+
+### Reducing Stage 1 activation memory
+
+The published InternVL3-8B launcher uses a sequence limit of 12,288 tokens, a dynamic tile budget of 16, 448-pixel tiles and thumbnails. For multiple views, the loader divides the tile budget among the images, with at least one tile each. A thumbnail can add a tile per view that needs multiple tiles. At the default image and patch size, each tile contributes 256 visual tokens. A shorter sequence limit alone can cut off image tokens or the supervised answer.
+
+For a one-node debugging run, reduce the tile budget first and turn off thumbnails while keeping the six views together. Check that the input still contains the answer within the sequence limit. The values below are a starting point for measuring memory. Actual capacity depends on the samples and the DeepSpeed setup.
+
+```bash
+NNODES=1 GPUS=8 PER_DEVICE_BATCH_SIZE=1 MAX_DYNAMIC_PATCH=6 USE_THUMBNAIL=False MAX_SEQ_LENGTH=4096 \
+  MODEL_PATH=/path/to/InternVL3-8B \
+  bash ./shell/internvl3.0/2nd_finetune/internvl3_8b_dynamic_res_2nd_finetune_recogdrive_pretrain.sh
+```
+
+Set `ZERO_CONFIG` to your DeepSpeed configuration if needed. The launcher uses ZeRO-1 by default. Gradient checkpointing remains enabled.
+
+### Score the Stage 1 VLM on NAVSIM
+
+Use the [Stage 1 VLM weights](https://huggingface.co/owl10/ReCogDrive-VLM-2B) with `internvl_agent`. This path decodes the eight waypoints as text using LMDeploy. Use the native trajectory prompt and a compatible LMDeploy/Transformers installation for comparisons.
+
+```bash
+torchrun --standalone --nproc-per-node=1 --module navsim.planning.script.run_pdm_score_internvl \
+  train_test_split=navtest agent=internvl_agent agent.cam_type=single agent.prompt_type=base \
+  agent.checkpoint_path=/path/to/ReCogDrive-VLM-2B metric_cache_path=/path/to/navtest_metric_cache \
+  experiment_name=internvl_stage1 worker=sequential
+```
+
+Report the backend and precision alongside the score. The Stage 1 LMDeploy entry uses BF16. The diffusion-planner checkpoints and scores use the separate Stage 2/3 evaluation command below.
 
 ## Stage 2: Diffusion Planner Imitation Learning
 
@@ -41,6 +67,8 @@ Since DiT training converges relatively slowly, training VLM and DiT jointly can
 # cache dataset for training
 sh cache_dataset/run_caching_recogdrive_hidden_state.sh
 ```
+
+If the caching job receives SIGHUP, run it in a job allocation or a persistent session and retry with the same split, VLM and cache directory. Add `force_cache_computation=False` to skip complete feature/target pairs. The writer publishes a file only after the gzip stream is complete. If an interrupted run with older code left a nonempty but unreadable gzip, rebuild the affected scenes in a fresh cache directory.
 
 ### Step 2: Configure and run training
 
@@ -65,6 +93,34 @@ sh evaluation/run_recogdrive_agent_pdm_score_evaluation_2b.sh
 ```
 
 This will evaluate your trained agent using **PDM scores** on the navtest.
+
+### Check inputs and visualize one NAVSIM scene
+
+From the repository root, set the standard NAVSIM dataset and experiment environment variables and pick a token from a score CSV or the `navtest` scene filter. Use the same VLM family and size as in training. The published ReCogDrive planner checkpoints use `agent.dit_type=small`. For an 8B VLM, also set `agent.vlm_size=large`.
+
+```bash
+TOKEN=your_scene_token
+EVAL_ARGS=(
+  train_test_split=navtest
+  agent=recogdrive_agent agent.cam_type=single agent.cache_hidden_state=false
+  agent.vlm_path=/path/to/ReCogDrive-VLM-2B
+  agent.checkpoint_path=/path/to/ReCogDrive-2B-IL.ckpt
+  metric_cache_path=/path/to/navtest_metric_cache
+  experiment_name=recogdrive_one_scene worker=sequential
+  "train_test_split.scene_filter.tokens=[$TOKEN]"
+)
+
+python -m navsim.planning.script.run_pdm_score_recogdrive "${EVAL_ARGS[@]}" +preflight=check
+torchrun --standalone --nproc-per-node=1 --module navsim.planning.script.run_pdm_score_recogdrive \
+  "${EVAL_ARGS[@]}" visualize=true
+```
+
+The CPU check lists logs outside the chosen split separately from missing logs. It reports missing scenes, front-camera files, and metric-cache entries. It compares the checkpoint's saved Hydra model and camera settings when available. Use `preflight.checkpoint_config=/path/to/config.yaml` if you moved the weights. Confirmed missing inputs or mismatches produce a nonzero exit.
+
+The score command regenerates features from images. To audit a feature cache for the same scenes, add `preflight.feature_cache_path=/path/to/feature_cache` to the check. The report inventories feature/target pairs and samples one hidden-state payload. Pass the original build config with `preflight.feature_cache_config=/path/to/config.yaml` if it is stored outside the cache. Older artifacts without saved configs are reported as having unknown model and view provenance. Supply only trusted logs, feature caches and checkpoints.
+
+The scorer saves the exact trajectory it scored as a plot beside the front camera image under `<output_dir>/vis/<token>.png`. If you know the log name, add `"train_test_split.scene_filter.log_names=[$LOG]"` with `LOG` set to the filename stem. Omit the token filter to check the full configured split.
+
 
 
 
@@ -109,3 +165,12 @@ sh evaluation/run_recogdrive_agent_pdm_score_evaluation_2b.sh
 ```
 This will evaluate your trained agent using **PDM scores** on the navtest.
 
+
+
+## Benchmark and deployment notes
+
+- **Bench2Drive.** Table 2 reports the CARLA closed-loop result over 220 routes. The published training annotations include Bench2Drive-Traj and Bench2Drive-QA. This release has no Bench2Drive-specific training configuration or separate pre-RL result. The example NAVSIM history and prediction horizons apply to NAVSIM. [Paper, Section 5](https://arxiv.org/html/2506.08052v2#S5)
+- **DriveBench.** The values in Table 5 match the clean-input columns of Appendix Table 7. LLaVA-1.5 and InternVL2 refer to the 7B and 8B DriveBench baseline rows. The DriveLM column has its own GPT-Score. The DriveBench evaluator exposes accuracy and language metrics as well as an optional GPT judge. See the [DriveBench reproduction notes](../vqa_evaluation/DriveBench/README.md).
+- **Text guidance.** The released diffusion planner takes the VLM's final hidden states directly. The text-guidance experiments in Appendix C describe research ablations. The public planner has no runtime switch for conditioning on a generated chain of thought. Use the Stage 1 agent for the text-waypoint baseline. [Paper, Appendix C](https://arxiv.org/html/2506.08052v2#A3)
+- **NAVSIM reward.** The released DiffGRPO reward uses NAVSIM 1.1 PDMS. Set `agent.grpo_bc_coeff` in Hydra or `GRPO_BC_COEFF` for the RL scripts to tune the reference-policy imitation term. The released code keeps its existing default of `0.1`. The NAVSIM 2.0 adjacent-frame Extended Comfort metric needs trajectories from neighboring frames. A larger imitation weight can constrain policy changes, so evaluate EC separately with the official scorer. [NAVSIM discussion](https://github.com/xiaomi-research/recogdrive/issues/74#issuecomment-4189302283)
+- **Deployment.** The supported open-source scoring path uses PyTorch with a BF16 VLM. The front-camera demo can serve as a reference when evaluating a deployment backend. This release has no validated ONNX export, INT8 recipe or end-to-end TensorRT engine for the VLM and planner.

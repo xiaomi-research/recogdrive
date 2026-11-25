@@ -42,6 +42,7 @@ class ReCogDriveAgent(AbstractAgent):
         reference_policy_checkpoint: Optional[str] = '', 
         vlm_size: Optional[str] = 'small', 
         train_backbone: bool = False,
+        grpo_bc_coeff: float = 0.1,
     ):
         super().__init__()
         self._trajectory_sampling = trajectory_sampling
@@ -53,6 +54,9 @@ class ReCogDriveAgent(AbstractAgent):
         self.cache_hidden_state = cache_hidden_state
         self._lr = lr
         self.grpo = grpo
+        if not math.isfinite(grpo_bc_coeff) or grpo_bc_coeff < 0:
+            raise ValueError("grpo_bc_coeff must be finite and non-negative")
+        self.grpo_bc_coeff = grpo_bc_coeff
         self.backbone = None
         self.metric_cache_path = metric_cache_path
         self.reference_policy_checkpoint = reference_policy_checkpoint
@@ -106,6 +110,16 @@ class ReCogDriveAgent(AbstractAgent):
                 k2 = k[len("agent."):] if k.startswith("agent.") else k
                 if k2 in model_dict and v.shape == model_dict[k2].shape:
                     filtered_ckpt[k2] = v
+            missing_planner = [
+                name for name, parameter in self.named_parameters()
+                if name.startswith("action_head.") and parameter.requires_grad and name not in filtered_ckpt
+            ]
+            if missing_planner:
+                raise ValueError(
+                    f"Planner checkpoint {self.checkpoint_path} does not match "
+                    f"dit_type={self.dit_type}, vlm_size={self.vlm_size}. "
+                    f"Missing or incompatible planner parameters: {missing_planner[:5]}"
+                )
             self.load_state_dict(filtered_ckpt, strict=False)
 
     def get_sensor_config(self) -> SensorConfig:
@@ -203,7 +217,8 @@ class ReCogDriveAgent(AbstractAgent):
             return self.action_head(last_hidden_state, action_inputs)
         elif self.training and self.grpo:
             action_inputs = BatchFeature(data={"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
-            return self.action_head.forward_grpo(last_hidden_state, action_inputs, tokens_list)
+            return self.action_head.forward_grpo(last_hidden_state, action_inputs, tokens_list,
+                                                 bc_coeff=self.grpo_bc_coeff)
         else: 
             action_inputs = BatchFeature({"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype)})
             return self.action_head.get_action(last_hidden_state.to(model_dtype), action_inputs)

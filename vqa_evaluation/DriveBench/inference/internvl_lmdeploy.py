@@ -27,7 +27,7 @@ from lmdeploy.vl import load_image
 import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
 
-from utils import replace_system_prompt, load_json_files, save_json, replace_system_prompt_new
+from utils import replace_system_prompt, save_predictions, replace_system_prompt_new
 
 
 assert Version(ray.__version__) >= Version("2.22.0"), "Ray version must be at least 2.22.0"
@@ -265,15 +265,7 @@ def main():
         batch_size=4,
     )
 
-    if not os.path.exists(os.path.dirname(args.output)):
-        os.makedirs(os.path.dirname(args.output))
-        
-    ds.write_json(args.output)
-
-    res = load_json_files(args.output)
-    save_json(res, args.output + ".json")
-
-    os.system(f"rm -rf {args.output}")
+    save_predictions(ds, args.output)
     
 
 if __name__ == '__main__':

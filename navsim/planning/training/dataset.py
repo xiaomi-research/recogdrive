@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 import logging
 import pickle
 import gzip
@@ -27,10 +28,24 @@ def load_feature_target_from_pickle(path: Path) -> Dict[str, torch.Tensor]:
 
 
 def dump_feature_target_to_pickle(path: Path, data_dict: Dict[str, torch.Tensor]) -> None:
-    """Helper function to save feature/target to pickle."""
-    # Use compresslevel = 1 to compress the size but also has fast write and read.
-    with gzip.open(path, "wb", compresslevel=1) as f:
-        pickle.dump(data_dict, f)
+    """Publish a gzip only after the complete payload has been written."""
+    temporary_path = None
+    try:
+        with NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+            with gzip.GzipFile(filename="", mode="wb", fileobj=temporary, compresslevel=1) as archive:
+                pickle.dump(data_dict, archive)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def is_nonempty_cache_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except FileNotFoundError:
+        return False
 
 
 class CacheOnlyDataset(torch.utils.data.Dataset):
@@ -103,11 +118,13 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
 
         for log_name in tqdm(log_names, desc="Loading Valid Caches"):
             log_path = cache_path / log_name
+            if not log_path.is_dir():
+                continue
             for token_path in log_path.iterdir():
                 found_caches: List[bool] = []
                 for builder in feature_builders + target_builders:
                     data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-                    found_caches.append(data_dict_path.is_file())
+                    found_caches.append(is_nonempty_cache_file(data_dict_path))
                 if all(found_caches):
                     valid_cache_paths[token_path.name] = token_path
 
@@ -179,11 +196,13 @@ class Dataset(torch.utils.data.Dataset):
 
         if (cache_path is not None) and cache_path.is_dir():
             for log_path in cache_path.iterdir():
+                if not log_path.is_dir() or log_path.name == "metadata":
+                    continue
                 for token_path in log_path.iterdir():
                     found_caches: List[bool] = []
                     for builder in feature_builders + target_builders:
                         data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-                        found_caches.append(data_dict_path.is_file())
+                        found_caches.append(is_nonempty_cache_file(data_dict_path))
                     if all(found_caches):
                         valid_cache_paths[token_path.name] = token_path
 
@@ -212,13 +231,15 @@ class Dataset(torch.utils.data.Dataset):
 
         for builder in self._feature_builders:
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-            if data_dict_path.exists():
+            if is_nonempty_cache_file(data_dict_path):
                 continue
             data_dict = builder.compute_features(agent_input)
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 
         for builder in self._target_builders:
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
+            if not self._force_cache_computation and is_nonempty_cache_file(data_dict_path):
+                continue
             data_dict = builder.compute_targets(scene)
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 
@@ -344,11 +365,13 @@ class Dataset_For_Traj(torch.utils.data.Dataset):
 
         if (cache_path is not None) and cache_path.is_dir():
             for log_path in cache_path.iterdir():
+                if not log_path.is_dir() or log_path.name == "metadata":
+                    continue
                 for token_path in log_path.iterdir():
                     found_caches: List[bool] = []
                     for builder in feature_builders + target_builders:
                         data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-                        found_caches.append(data_dict_path.is_file())
+                        found_caches.append(is_nonempty_cache_file(data_dict_path))
                     if all(found_caches):
                         valid_cache_paths[token_path.name] = token_path
 
@@ -496,11 +519,13 @@ class Dataset_For_Pipeline(torch.utils.data.Dataset):
 
         if (cache_path is not None) and cache_path.is_dir():
             for log_path in cache_path.iterdir():
+                if not log_path.is_dir() or log_path.name == "metadata":
+                    continue
                 for token_path in log_path.iterdir():
                     found_caches: List[bool] = []
                     for builder in feature_builders + target_builders:
                         data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-                        found_caches.append(data_dict_path.is_file())
+                        found_caches.append(is_nonempty_cache_file(data_dict_path))
                     if all(found_caches):
                         valid_cache_paths[token_path.name] = token_path
 

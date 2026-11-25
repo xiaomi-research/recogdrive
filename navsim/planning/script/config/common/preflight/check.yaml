@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - override /hydra/job_logging: stdout
+
+preflight:
+  enabled: true
+  checkpoint_config: null
+  feature_cache_path: null
+  feature_cache_config: null
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

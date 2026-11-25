@@ -511,7 +511,12 @@ class LazySupervisedDataset(Dataset):
         position_ids = ret['attention_mask'].long().cumsum(-1) - 1
         position_ids.masked_fill_(ret['attention_mask'] == 0, 1)
         image_end_token_id = self.tokenizer.convert_tokens_to_ids(IMG_END_TOKEN)
-        assert (ret['input_ids'][0] == image_end_token_id).sum() == num_image, f'image tokens are truncated, this dataset is {self.ds_name}'
+        if (ret['input_ids'][0] == image_end_token_id).sum() != num_image:
+            raise ValueError(
+                f'{self.ds_name}: {num_image} images use {sum(num_image_tokens)} visual tokens. '
+                f'The prompt lost image tokens at max_seq_length={self.tokenizer.model_max_length}. '
+                'Lower max_dynamic_patch, disable use_thumbnail, or increase max_seq_length if memory allows.'
+            )
 
         # Create the final return dictionary
         ret = dict(
@@ -660,8 +665,6 @@ class LazySupervisedDataset(Dataset):
 
         try_cnt, max_try = 0, 10
         while True:
-            if try_cnt > max_try:
-                raise StopIteration
             try:
                 data_item = json.loads(self.raw_data[i])
                 # conversations = data_item['conversations']
@@ -678,6 +681,8 @@ class LazySupervisedDataset(Dataset):
                 break
             except Exception as e:
                 try_cnt += 1
+                if try_cnt > max_try:
+                    raise RuntimeError(f'Could not load a sample from {self.ds_name} after {try_cnt} attempts') from e
                 print(e, self.ds_name, flush=True)
                 if not isinstance(e, (UnidentifiedImageError, FileNotFoundError)):
                     traceback.print_exc()

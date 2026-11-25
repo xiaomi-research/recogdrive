@@ -34,6 +34,9 @@ def cache_features(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[
     Helper function to cache features and targets of learnable agent.
     :param args: arguments for caching
     """
+    if not args:
+        return []
+
     node_id = int(os.environ.get("NODE_RANK", 0))
     thread_id = str(uuid.uuid4())
 

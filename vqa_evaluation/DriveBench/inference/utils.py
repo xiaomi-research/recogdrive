@@ -1,6 +1,8 @@
 import os
 import re
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import List, Tuple
 
 
@@ -173,3 +175,11 @@ def save_json(data, output_file):
     """
     with open(output_file, 'w') as f:
         json.dump(data, f, indent=4)
+
+
+def save_predictions(dataset, output: str) -> None:
+    destination = Path(output + ".json")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=destination.parent, prefix=".drivebench-") as parts:
+        dataset.write_json(parts)
+        save_json(load_json_files(parts), str(destination))

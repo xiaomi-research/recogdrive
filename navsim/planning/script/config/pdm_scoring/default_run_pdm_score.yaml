@@ -20,3 +20,4 @@ defaults:
   - override train_test_split: navtest
 
 metric_cache_path: ${oc.env:NAVSIM_EXP_ROOT}/metric_cache # path to metric cache
+visualize: false  # write a trajectory PNG per evaluated scene under output_dir/vis

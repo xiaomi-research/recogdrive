@@ -1,4 +1,12 @@
-GPU=$1
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+GPU="${1:?Pass the number of GPUs}"
+MODEL="${MODEL:?Set MODEL to the checkpoint or Hugging Face model ID}"
+DATA_JSON="${DATA_JSON:-data/drivebench-test-final.json}"
+OUTPUT_DIR="${OUTPUT_DIR:-res/llava-1.5-7b}"
 
 # Define corresponding output names and corruption values in order.
 corruptions=(
@@ -43,10 +51,10 @@ outputs=(
 
 # Loop over the arrays and run the commands.
 for i in "${!outputs[@]}"; do
-    python inference/internvl.py \
-        --model '/high_perf_store3/world-model/yongkangli/data/NAVSIM/internvl_chat/work_dirs/VLA-Navsim/internvl3_8b_finetune_full_baseline_com_his_mix_training_final_no_llava_all_llava_clean_pipelinev5_internvl3' \
-        --data data/drivebench-test-final.json \
-        --output "res/llava-1.5-7b/${outputs[i]}" \
+    python inference/llava1.5.py \
+        --model "$MODEL" \
+        --data "$DATA_JSON" \
+        --output "$OUTPUT_DIR/${outputs[i]}" \
         --system_prompt prompt.txt \
         --num_processes "${GPU}" \
         --max_model_len 4096 \

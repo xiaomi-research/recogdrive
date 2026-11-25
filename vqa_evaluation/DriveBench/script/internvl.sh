@@ -1,4 +1,12 @@
-GPU=$1
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+GPU="${1:?Pass the number of GPUs}"
+MODEL="${MODEL:?Set MODEL to the checkpoint or Hugging Face model ID}"
+DATA_JSON="${DATA_JSON:-data/drivebench-test-final.json}"
+OUTPUT_DIR="${OUTPUT_DIR:-res/internvl_lm_new}"
 
 # Define corresponding output names and corruption values in order.
 corruptions=(
@@ -44,9 +52,9 @@ outputs=(
 # Loop over the arrays and run the commands.
 for i in "${!outputs[@]}"; do
     python inference/internvl_lmdeploy.py \
-        --model '/path/to/Recogdrive_DriveLM' \
-        --data data/drivebench-test-final.json \
-        --output "res/internvl_lm_new/${outputs[i]}" \
+        --model "$MODEL" \
+        --data "$DATA_JSON" \
+        --output "$OUTPUT_DIR/${outputs[i]}" \
         --system_prompt prompt.txt \
         --num_processes "${GPU}" \
         --corruption "${corruptions[i]}"

@@ -13,9 +13,10 @@ from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
 import pickle
 import io
+import json
 import hydra
 from hydra.utils import instantiate
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import pandas as pd
 
 from nuplan.planning.script.builders.logging_builder import build_logger
@@ -65,6 +66,9 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
     Helper function to run PDMS evaluation in.
     :param args: input arguments
     """
+    if not args:
+        return pickle.dumps([])
+
     node_id = int(os.environ.get("NODE_RANK", 0))
     thread_id = str(uuid.uuid4())
     logger.info(f"Starting worker in thread_id={thread_id}, node_id={node_id}")
@@ -122,6 +126,10 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
                 simulator=simulator,
                 scorer=scorer,
             )
+            if cfg.get("visualize", False):
+                from navsim.visualization.trajectory_plot import save_trajectory_plot
+
+                save_trajectory_plot(agent_input, trajectory, token, Path(cfg.output_dir) / "vis")
             score_row.update(asdict(pdm_result))
             score_row['rank'] = dist.get_rank()
         except Exception as e:
@@ -163,6 +171,20 @@ def main(cfg: DictConfig) -> None:
     Main entrypoint for running PDMS evaluation.
     :param cfg: omegaconf dictionary
     """
+    from navsim.planning.script.recogdrive_preflight import check_inputs, scoring_config_errors
+
+    if OmegaConf.select(cfg, "preflight.enabled"):
+        if int(os.environ.get("RANK", "0")) == 0:
+            report = check_inputs(cfg)
+            print(json.dumps(report, indent=2), flush=True)
+            if report["errors"]:
+                raise ValueError("NAVSIM input check failed. See the errors above.")
+        return
+
+    errors = scoring_config_errors(cfg)
+    if errors:
+        raise ValueError(" ".join(errors))
+
     local_rank = int(os.getenv('LOCAL_RANK', 0))
     world_size = int(os.getenv('WORLD_SIZE', 1))
     rank = int(os.getenv('RANK', 0))
@@ -204,6 +226,8 @@ def main(cfg: DictConfig) -> None:
 
     logger.info("Starting pdm scoring of %s scenarios...", str(len(tokens_to_evaluate)))
 
+    if not tokens_to_evaluate:
+        raise ValueError("No selected scenes have a metric cache. Run with +preflight=check.")
     sampler = InferenceSampler(len(tokens_to_evaluate))
 
     data_points = []
@@ -239,8 +263,8 @@ def main(cfg: DictConfig) -> None:
 
     if dist.get_rank() == 0:
         final_results = []
-        for gathered_tensor in gathered_results:
-            gathered_tensor = gathered_tensor[:local_size]  
+        for gathered_tensor, size in zip(gathered_results, size_list):
+            gathered_tensor = gathered_tensor[:int(size.item())]
             serialized_data = gathered_tensor.cpu().numpy().tobytes()
             final_results.extend(pickle.loads(serialized_data))  # 
     
@@ -257,6 +281,8 @@ def main(cfg: DictConfig) -> None:
         save_path = Path(cfg.output_dir)
         timestamp = datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
         pdm_score_df.to_csv(save_path / f"{timestamp}.csv")
+        if not num_sucessful_scenarios:
+            raise RuntimeError(f"No scenes were scored successfully. See {save_path / f'{timestamp}.csv'}.")
 
         logger.info(
             f"""

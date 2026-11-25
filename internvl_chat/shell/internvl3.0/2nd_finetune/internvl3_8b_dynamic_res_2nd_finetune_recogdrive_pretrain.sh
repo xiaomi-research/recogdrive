@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+set -e -o pipefail
 set -x
 
 PARTITION=${PARTITION:-"Intern5"}
@@ -27,20 +29,20 @@ fi
 # total batch size: 128
 # epoch: 1
 torchrun \
-  --nnodes=8 \
-  --node_rank=$MLP_ROLE_INDEX \
-  --master_addr=$MLP_WORKER_0_HOST \
+  --nnodes="${NNODES:-8}" \
+  --node_rank="${MLP_ROLE_INDEX:-0}" \
+  --master_addr="${MLP_WORKER_0_HOST:-127.0.0.1}" \
   --nproc_per_node=${GPUS} \
-  --master_port=$MLP_WORKER_0_PORT \
+  --master_port="${MLP_WORKER_0_PORT:-$MASTER_PORT}" \
   internvl/train/internvl_chat_finetune.py \
-  --model_name_or_path "/path/to/ckpt/InternVL3-8B" \
+  --model_name_or_path "${MODEL_PATH:-/path/to/ckpt/InternVL3-8B}" \
   --conv_style "internvl2_5" \
   --use_fast_tokenizer False \
   --output_dir ${OUTPUT_DIR} \
   --meta_path "./shell/data_info/recogdrive_pretrain.json" \
   --overwrite_output_dir True \
   --force_image_size 448 \
-  --max_dynamic_patch 16 \
+  --max_dynamic_patch "${MAX_DYNAMIC_PATCH:-16}" \
   --down_sample_ratio 0.5 \
   --drop_path_rate 0.1 \
   --freeze_llm False \
@@ -61,13 +63,13 @@ torchrun \
   --warmup_ratio 0.1 \
   --lr_scheduler_type "cosine" \
   --logging_steps 1 \
-  --max_seq_length 12288 \
+  --max_seq_length "${MAX_SEQ_LENGTH:-12288}" \
   --do_train True \
   --grad_checkpoint True \
   --group_by_length True \
   --dynamic_image_size True \
-  --use_thumbnail True \
+  --use_thumbnail "${USE_THUMBNAIL:-True}" \
   --ps_version 'v2' \
-  --deepspeed "zero_stage1_config.json" \
+  --deepspeed "${ZERO_CONFIG:-zero_stage1_config.json}" \
   --report_to "tensorboard" \
   2>&1 | tee -a "${OUTPUT_DIR}/training_log.txt"
