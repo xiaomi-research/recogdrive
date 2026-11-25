@@ -5,7 +5,6 @@ import argparse
 
 from tqdm import tqdm
 from multiprocessing import Pool
-import language_evaluation
 
 from evaluate.utils import preprocess_answer
 from evaluate.request import GPTEvaluation
@@ -33,14 +32,15 @@ class EvaluationSuit:
         """
         
         self.eval_gpt = eval_gpt
-        self.desc_file = desc_file
-        self.original_data = json.load(open(desc_file, 'r'))
-        
-        # Langauge evaluation api
-        self.language_eval = language_evaluation.CocoEvaluator(coco_types=["BLEU", "ROUGE_L", "CIDEr"])
-        # GPT evaluation api
-        self.gpt_score_eval = GPTEvaluation(api_key, log_file=log_file)
-        
+        self.language_eval = None
+        if eval_gpt:
+            if not api_key:
+                raise ValueError("Set OPENAI_API_KEY or pass --key with --eval-gpt.")
+            with open(desc_file, encoding="utf-8") as stream:
+                self.original_data = json.load(stream)
+            self.gpt_score_eval = GPTEvaluation(api_key, temperature=temperature,
+                                                max_tokens=max_tokens, log_file=log_file)
+
         # Task - Question_type - Metric: List[data]
         self.results = {
             "perception": {
@@ -95,8 +95,8 @@ class EvaluationSuit:
         frame_token = data_item["frame_token"]
         
         # if question refer to an object, extract its visual description
-        desc = self.extract_visual_description(scene_token, frame_token, question)
-        data_item['desc'] = desc
+        if self.eval_gpt:
+            data_item['desc'] = self.extract_visual_description(scene_token, frame_token, question)
         
         if question_type == "perception":
             # Perception - VQA
@@ -166,6 +166,10 @@ class EvaluationSuit:
         pred_list = [data_item['pred'] for data_item in data]
         GT_list = [data_item['answer'] for data_item in data]
         
+        if self.language_eval is None:
+            import language_evaluation
+
+            self.language_eval = language_evaluation.CocoEvaluator(coco_types=["BLEU", "ROUGE_L", "CIDEr"])
         results_gen = self.language_eval.run_evaluation(pred_list, GT_list)
         results_gen_dict = {f"{k}": v for k, v in results_gen.items()}
         return results_gen_dict
