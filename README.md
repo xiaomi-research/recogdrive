@@ -32,7 +32,7 @@ International Conference on Learning Representation (ICLR), 2026
 ## Updates
 - [ ] Release DriveLM, NAVSIM2.0, Drivebench evaluation frameworks
 
-Future Bench2Drive updates will be in UniDriveVLA. Its guide covers training and CARLA closed-loop evaluation. [UniDriveVLA Bench2Drive guide](https://github.com/xiaomi-research/unidrivevla/blob/main/docs/train_eval_bench2drive.md)
+The ReCogDrive Bench2Drive training and closed-loop evaluation pipeline remains unreleased. For a reference implementation, see the UniDriveVLA training configurations and CARLA evaluation commands. [UniDriveVLA Bench2Drive guide](https://github.com/xiaomi-research/unidrivevla/blob/main/docs/train_eval_bench2drive.md)
 
 - [x] Release Paper
 - [x] Release Full Models and Training/Evaluation Framework
