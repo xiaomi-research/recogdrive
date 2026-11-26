@@ -143,6 +143,7 @@ class ReCogDriveAgent(AbstractAgent):
         side_num_patches: Optional[int] = None,
         *,
         grpo_waymo_dev_rfs: bool = False,
+        grpo_reverse_gate: bool = False,
         qwen_image_short_sides: Optional[Sequence[Optional[int]]] = None,
         qwen_max_input_tokens: Optional[int] = None,
     ):
@@ -192,6 +193,10 @@ class ReCogDriveAgent(AbstractAgent):
         waymo_reward = None
         if self.grpo_reward not in ("navsim_pdm", "waymo_rfs", "waymo_ade"):
             raise ValueError(f"grpo_reward must be navsim_pdm, waymo_rfs or waymo_ade, got {grpo_reward!r}")
+        if type(grpo_reverse_gate) is not bool:
+            raise ValueError("grpo_reverse_gate must be a boolean")
+        if self.grpo and grpo_reverse_gate and self.grpo_reward != "navsim_pdm":
+            raise ValueError("grpo_reverse_gate requires grpo_reward=navsim_pdm")
         if grpo_waymo_dev_rfs and (self.grpo_reward != "waymo_rfs" or grpo_reward_split != "val"):
             raise ValueError("grpo_waymo_dev_rfs requires waymo_rfs and grpo_reward_split=val")
         if self.grpo and self.grpo_reward in ("waymo_rfs", "waymo_ade"):
@@ -307,7 +312,9 @@ class ReCogDriveAgent(AbstractAgent):
                 if grpo_reward_workers is None:
                     ranks = int(os.getenv("LOCAL_WORLD_SIZE", "1"))
                     grpo_reward_workers = min(16, max(1, (os.cpu_count() or 2) // (2 * ranks)))
-                self.action_head.reward_fn = PDMReward(self.metric_cache_path, grpo_reward_workers)
+                self.action_head.reward_fn = PDMReward(
+                    self.metric_cache_path, grpo_reward_workers, reverse_gate=grpo_reverse_gate
+                )
 
     def name(self) -> str:
         return self.__class__.__name__

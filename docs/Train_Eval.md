@@ -255,6 +255,8 @@ CHECKPOINT=/path/to/il.ckpt METRIC_CACHE_PATH=/path/to/navtrain_metric_cache \
   bash scripts/train/run_recogdrive_internvl3_waypoint_rl.sh
 ```
 
+Append `agent.grpo_reverse_gate=true` to a NAVSIM RL command to enable the reverse gate adapted from AUGUstus. A longitudinal step backwards by more than 1 cm zeros that trajectory's training reward, including the step from the ego origin to the first waypoint. The gate also applies to intentional reversing. [AUGUstus (Ye et al., 2026)](https://arxiv.org/abs/2610.16985) · [Reference implementation](https://github.com/haha-yuki-haha/AUGUstus/blob/edf3422304e4b2987e839a9212cf1176782e7380/AUGUstus_GRPO/recipe/transfusion/transfusion_reward.py#L418-L442)
+
 For flow-matching RL, use the flow sampler:
 
 ```bash

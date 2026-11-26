@@ -31,6 +31,7 @@ grpo_bc_coeff: 0.1
 grpo_sample_time: 8
 grpo_reward_workers: null  # processes per rank scoring the reward; null: half the CPU cores per rank (max 16), 0: in-process
 grpo_reward: navsim_pdm  # explicit extensions: waymo_ade (logged targets) | waymo_rfs (training rater labels), >=5 s
+grpo_reverse_gate: false  # NAVSIM GRPO: zero the planning reward for a backward step exceeding 1 cm
 grpo_reward_cache_path: null
 grpo_reward_split: training
 grpo_waymo_dev_rfs: false  # opt in to RL on official Waymo val; its RFS is a development-set result

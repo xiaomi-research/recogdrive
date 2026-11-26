@@ -62,8 +62,9 @@ def score_in_worker(token: str, poses: np.ndarray) -> List[float]:
 
 
 class PDMReward:
-    def __init__(self, metric_cache_path: str, workers: int = 0):
+    def __init__(self, metric_cache_path: str, workers: int = 0, *, reverse_gate: bool = False):
         self.workers = workers
+        self.reverse_gate = reverse_gate
         self.scenes = None if workers else PDMScenes(metric_cache_path)
         # spawn: the training process holds CUDA and NCCL threads a fork would copy mid-flight. Started now, the
         # workers' imports overlap model loading instead of delaying the first rollout.
@@ -104,4 +105,9 @@ class PDMReward:
         for idxs, scores in scored:
             for i, score in zip(idxs, scores):
                 rewards[i] = score
+        if self.reverse_gate:
+            # AUGUstus includes the step from the ego origin and ignores up to 1 cm of jitter.
+            dx = np.diff(poses[..., 0], axis=1, prepend=0.0)
+            for i in np.flatnonzero((dx < -0.01).any(axis=1)):
+                rewards[i] = 0.0
         return torch.tensor(rewards, device=trajectories.device, dtype=trajectories.dtype)
