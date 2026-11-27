@@ -528,55 +528,60 @@ class ReCogDriveAgent(AbstractAgent):
         if high_command_one_hot.ndim == 1:
             high_command_one_hot = high_command_one_hot.unsqueeze(0)
 
+        vl_attention_mask = None
         if self.cache_hidden_state:
             last_hidden_state = features["last_hidden_state"]
+            if "vl_attention_mask" in features and self.vlm_type.lower() == "qwen":
+                vl_attention_mask = features["vl_attention_mask"]
         else:
             if self.backbone is None:
                 raise RuntimeError("Agent is in 'no-cache' mode, but backbone is not initialized.")
-            if self.vlm_type.lower() == "qwen":
-                pixel_values_cat = image_paths
-                num_patches_list = None
-            elif "pixel_values" in features:
-                pixel_values_cat = features["pixel_values"]
-            else:
-                pixel_values_list = [load_image(path) for path in image_paths]
-                num_patches_list = [p.shape[0] for p in pixel_values_list]
-                pixel_values_cat = torch.cat(pixel_values_list, dim=0).to(self.device, non_blocking=True)
-
             vlm_ctx = torch.no_grad() if not self.vlm_trainable else contextlib.nullcontext()
             with vlm_ctx:
-                options = ({"image_short_sides": features["image_short_sides"]}
-                           if self.vlm_type.lower() == "qwen" and "image_short_sides" in features else {})
-                last_hidden_state = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list, **options)
+                if self.vlm_type.lower() == "qwen":
+                    last_hidden_state, vl_attention_mask = self.backbone(
+                        image_paths, questions, image_short_sides=features.get("image_short_sides"),
+                        return_attention_mask=True,
+                    )
+                else:
+                    if "pixel_values" in features:
+                        pixel_values_cat = features["pixel_values"]
+                    else:
+                        pixel_values_list = [load_image(path) for path in image_paths]
+                        num_patches_list = [p.shape[0] for p in pixel_values_list]
+                        pixel_values_cat = torch.cat(pixel_values_list, dim=0).to(self.device, non_blocking=True)
+                    last_hidden_state = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
 
         status_feature = features["status_feature"]
         if status_feature.ndim == 1:
             status_feature = status_feature.unsqueeze(0)
         if last_hidden_state.ndim == 2:
             last_hidden_state = last_hidden_state.unsqueeze(0)
+            if vl_attention_mask is not None and vl_attention_mask.ndim == 1:
+                vl_attention_mask = vl_attention_mask.unsqueeze(0)
 
         last_hidden_state = last_hidden_state.to(model_dtype)
         history_trajectory_reshaped = history_trajectory.view(history_trajectory.size(0), -1)
         input_state = torch.cat([status_feature, history_trajectory_reshaped], dim=1)
 
-        if self.training and not self.grpo:
-            action_inputs = BatchFeature(data={"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
+        action_inputs = BatchFeature(data={
+            "state": input_state.to(model_dtype),
+            "his_traj": history_trajectory_reshaped.to(model_dtype),
+            "status_feature": status_feature.to(model_dtype),
+        })
+        if vl_attention_mask is not None:
+            action_inputs["vl_attention_mask"] = vl_attention_mask
+        if not self.training:
+            return self.action_head.get_action(last_hidden_state, action_inputs)
+
+        action_inputs["action"] = targets["trajectory"].to(model_dtype)
+        if not self.grpo:
             return self.action_head(last_hidden_state, action_inputs)
-        elif self.training and self.grpo:
-            action_inputs = BatchFeature(data={"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
-            if reuse_rollout:
-                return self.action_head.grpo_loss_from_rollout(
-                    self._grpo_rollout, vl_features=last_hidden_state
-                )
+        if not reuse_rollout:
             self._grpo_rollout = self.action_head.collect_grpo_rollout(
                 last_hidden_state, action_inputs, tokens_list
             )
-            return self.action_head.grpo_loss_from_rollout(
-                self._grpo_rollout, vl_features=last_hidden_state
-            )
-        else: 
-            action_inputs = BatchFeature({"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype)})
-            return self.action_head.get_action(last_hidden_state.to(model_dtype), action_inputs)
+        return self.action_head.grpo_loss_from_rollout(self._grpo_rollout, vl_features=last_hidden_state)
 
     def compute_trajectory(self, agent_input: AgentInput) -> Trajectory:
         self.eval()

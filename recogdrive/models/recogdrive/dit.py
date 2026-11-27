@@ -119,6 +119,7 @@ class LightningDiTBlock(nn.Module):
         conditioning: torch.Tensor,
         encoder_hidden_states: Optional[torch.Tensor] = None,
         rotary_embedder: Optional[nn.Module] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         mod_params = self.adaLN_modulation(conditioning)
         shift_attn, scale_attn, gate_attn, shift_ffn, scale_ffn, gate_ffn = \
@@ -130,6 +131,7 @@ class LightningDiTBlock(nn.Module):
         attn_output = self.attn(
             modulated_states,
             encoder_hidden_states=encoder_hidden_states,
+            attention_mask=attention_mask,
             rotary_embedder=rotary_embedder
         )
         hidden_states = hidden_states + gate_attn.unsqueeze(1) * attn_output
@@ -213,6 +215,7 @@ class LightningDiT(nn.Module):
         conditioning_features: torch.Tensor,
         timesteps: torch.LongTensor,
         return_hidden_states: bool = False,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor | tuple[torch.Tensor, List[torch.Tensor]]:
         """
         Forward pass of the UnifiedDiT model.
@@ -235,6 +238,8 @@ class LightningDiT(nn.Module):
         time_embedding = self.timestep_encoder(timesteps)
         conditioning = time_embedding + conditioning_features
 
+        # Each scene's token mask broadcasts over all its heads and grouped trajectory queries.
+        cross_mask = encoder_attention_mask[:, None, None, :] if encoder_attention_mask is not None else None
         all_hidden_states = [hidden_states]
         for idx, block in enumerate(self.transformer_blocks):
             use_cross_attention = not (idx % 2 == 0 and self.interleave_attention)
@@ -245,6 +250,7 @@ class LightningDiT(nn.Module):
                 conditioning=conditioning,
                 encoder_hidden_states=current_encoder_states,
                 rotary_embedder=self.rotary_embedder,
+                attention_mask=cross_mask if use_cross_attention else None,
             )
             all_hidden_states.append(hidden_states)
 

@@ -173,6 +173,16 @@ def collate(batch):
     features_list, targets_list = columns[0], columns[1]
     tokens = columns[2] if len(columns) > 2 else [None] * len(batch)
     features = collate_dicts(features_list)
+    hidden = features.get("last_hidden_state")
+    if torch.is_tensor(hidden) and hidden.ndim == 3 and "vl_attention_mask" not in features:
+        # Cached Qwen states are saved one unpadded scene at a time. pad_sequence right-pads them here.
+        states = [sample["last_hidden_state"] for sample in features_list]
+        if any(state.shape[0] != states[0].shape[0] or "vl_attention_mask" in sample
+               for state, sample in zip(states, features_list)):
+            masks = [sample["vl_attention_mask"].bool() if "vl_attention_mask" in sample
+                     else state.new_ones((state.shape[0],), dtype=torch.bool)
+                     for state, sample in zip(states, features_list)]
+            features["vl_attention_mask"] = rnn_utils.pad_sequence(masks, batch_first=True)
     if "pixel_values" in features and "num_patches" not in features:
         features["num_patches"] = [f["pixel_values"].shape[0] for f in features_list]
     return features, collate_dicts(targets_list), list(tokens)

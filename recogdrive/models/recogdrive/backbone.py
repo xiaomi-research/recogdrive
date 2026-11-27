@@ -319,14 +319,15 @@ class RecogDriveBackbone(nn.Module):
         print("InternVL model configured.")
 
     def forward(self, pixel_values: Union[torch.Tensor, List[str]], questions: List[str],
-                num_patches_list: Optional[List[int]] = None, image_short_sides=None) -> torch.Tensor:
+                num_patches_list: Optional[List[int]] = None, image_short_sides=None,
+                return_attention_mask: bool = False) -> Union[torch.Tensor, tuple[torch.Tensor, Optional[torch.Tensor]]]:
         """The language model's final hidden states (B, tokens, hidden), the same values as `hidden_states[-1]` of
-        the chat model's forward. Only the decoder runs: its LM head would compute logits over every position that
-        nothing uses."""
+        the chat model's forward. When requested, also return the valid-token mask for planning.
+        A missing mask means every position is valid."""
         if not self.model:
             raise RuntimeError("Backbone model has not been initialized. Call initialize() on the agent first.")
         if self.model_type == "qwen":
-            return self.forward_qwen(pixel_values, questions, image_short_sides)
+            return self.forward_qwen(pixel_values, questions, image_short_sides, return_attention_mask=return_attention_mask)
         
         model_dtype = next(self.model.parameters()).dtype
 
@@ -366,11 +367,13 @@ class RecogDriveBackbone(nn.Module):
         vit_embeds = self.model.extract_feature(pixel_values.to(model_dtype))
         selected = (input_ids == self.img_context_token_id).unsqueeze(-1)
         embeds = embeds.masked_scatter(selected, vit_embeds.reshape(-1, embeds.shape[-1]).to(embeds.dtype))
-        return language_model.get_decoder()(
+        hidden = language_model.get_decoder()(
             inputs_embeds=embeds, attention_mask=attention_mask, position_ids=position_ids, use_cache=False,
         ).last_hidden_state
+        return (hidden, attention_mask.bool()) if return_attention_mask else hidden
 
-    def forward_qwen(self, image_paths: List, questions: List[str], image_short_sides=None):
+    def forward_qwen(self, image_paths: List, questions: List[str], image_short_sides=None,
+                     return_attention_mask: bool = False):
         if process_vision_info is None:
             raise ImportError("qwen_vl_utils is required for Qwen-VL preprocessing.")
         if not isinstance(image_paths, list):
@@ -410,16 +413,22 @@ class RecogDriveBackbone(nn.Module):
             images=image_inputs,
             videos=video_inputs or None,
             padding=True,
+            return_attention_mask=True,
             return_tensors="pt",
         )
         limit = self.qwen_max_input_tokens
         if limit is not None and model_inputs["input_ids"].shape[-1] > limit:
             raise ValueError(f"Qwen prompt exceeds qwen_max_input_tokens={limit}; reduce the image sizes or camera count")
+        # The processor is on the CPU. Uniform-length batches can use the planner's unmasked attention kernel.
+        has_padding = return_attention_mask and not model_inputs["attention_mask"].all().item()
         model_inputs = model_inputs.to(self.device)
 
         # The generation model's own hidden_states[-1]: for Qwen3-VL it is the last decoder layer before the final
         # norm, unlike self.model.model's. logits_to_keep=1 leaves the LM head one position instead of every token.
-        return self.model(**model_inputs, output_hidden_states=True, use_cache=False, logits_to_keep=1).hidden_states[-1]
+        hidden = self.model(**model_inputs, output_hidden_states=True, use_cache=False, logits_to_keep=1).hidden_states[-1]
+        if return_attention_mask:
+            return hidden, model_inputs["attention_mask"].bool() if has_padding else None
+        return hidden
 
     def forward_vqa(self, features: dict) -> torch.Tensor:
         """Answer-only causal LM loss over the same VLM used by planning."""
